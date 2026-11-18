@@ -105,6 +105,38 @@ def carregar_juros() -> pd.DataFrame:
     return pd.read_csv(p / "parametros.csv", parse_dates=["data"]) if (p / "parametros.csv").exists() else pd.DataFrame()
 
 
+URL_UF = "https://raw.githubusercontent.com/codeforgermany/click_that_hood/main/public/data/brazil-states.geojson"
+
+
+@st.cache_data(ttl=7 * 24 * 3600, show_spinner=False)
+def estados_geojson() -> tuple[dict | None, pd.DataFrame]:
+    """Divisas estaduais (GeoJSON público dos estados do Brasil, projeto click_that_hood), simplificadas aqui
+    (1 a cada 6 vértices, 3 casas decimais) para o mapa carregar rápido. Retorna o GeoJSON e o ponto do rótulo
+    (sigla) de cada estado = média dos vértices do maior polígono."""
+    try:
+        g = requests.get(URL_UF, timeout=60).json()
+    except Exception:  # noqa: BLE001
+        return None, pd.DataFrame()
+
+    def anel(r):
+        pts = r[::6]
+        if len(pts) < 4:
+            pts = r
+        pts = [[round(x, 3), round(y, 3)] for x, y in pts[:-1]] + [[round(r[0][0], 3), round(r[0][1], 3)]]
+        return pts
+    feats, rot = [], []
+    for f in g.get("features", []):
+        geo = f["geometry"]
+        polys = [geo["coordinates"]] if geo["type"] == "Polygon" else geo["coordinates"]
+        polys = [[anel(r) for r in p] for p in polys]
+        maior = max(polys, key=lambda p: len(p[0]))[0]
+        sigla = f["properties"].get("sigla", "")
+        rot.append({"sigla": sigla, "lon": float(np.mean([x for x, _ in maior])), "lat": float(np.mean([y for _, y in maior]))})
+        feats.append({"type": "Feature", "properties": {"sigla": sigla},
+                      "geometry": {"type": "MultiPolygon", "coordinates": polys}})
+    return {"type": "FeatureCollection", "features": feats}, pd.DataFrame(rot)
+
+
 @st.cache_data(ttl=TTL)
 def trafego_mensal() -> pd.DataFrame:
     """Base única praça x mês: veículos equivalentes pagantes, total de veículos e pesados."""
@@ -574,15 +606,23 @@ with aba_mapa:
         pt["cor"] = pt.grupo.map(lambda g: hex_rgb(COR_GRUPO.get(g, "#B0B0B0")))
         pt["raio"] = 4000 + np.sqrt(pt.veic_eq_ltm.astype(float)) * 4
         pt["veic_eq_ltm_txt"] = pt.veic_eq_ltm.map(lambda v: f"{v:,.0f}".replace(",", "."))
+        camadas = []
+        ufs_geo, ufs_rot = estados_geojson()
+        if ufs_geo:
+            camadas.append(pdk.Layer("GeoJsonLayer", ufs_geo, stroked=True, filled=True, get_fill_color=[128, 128, 128, 18],
+                                     get_line_color=[160, 160, 160, 220], line_width_min_pixels=1, pickable=False))
+            camadas.append(pdk.Layer("TextLayer", ufs_rot, get_position="[lon, lat]", get_text="sigla", get_size=12,
+                                     get_color=[150, 150, 150, 230], pickable=False))
         st.pydeck_chart(pdk.Deck(
             map_style=None, initial_view_state=pdk.ViewState(latitude=-18, longitude=-50, zoom=3.6),
-            layers=[pdk.Layer("ScatterplotLayer", pt, get_position="[longitude, latitude]", get_fill_color="cor",
+            layers=camadas + [pdk.Layer("ScatterplotLayer", pt, get_position="[longitude, latitude]", get_fill_color="cor",
                               get_radius="raio", pickable=True, opacity=0.8, stroked=True, get_line_color=[255, 255, 255],
                               line_width_min_pixels=1)],
             tooltip={"text": "{nome} ({grupo})\n{local}\nVeíc. eq. LTM: {veic_eq_ltm_txt}"}))
         legenda({g: COR_GRUPO[g] for g in GRUPOS if g in set(pt.grupo)})
         sem_pos = sel[~sel.id.isin(set(com_praca)) & ~sel.id.isin(set(sem.id))]
-        st.caption("Praças federais com coordenadas da ANTT; demais SPEs (SP, MG e federais sem praça georreferenciada) "
+        st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. "
+                   "Praças federais com coordenadas da ANTT; demais SPEs (SP, MG e federais sem praça georreferenciada) "
                    "num ponto aproximado do trecho, do cadastro. Tamanho = veículos equivalentes LTM."
                    + (f" Sem posição no mapa: {', '.join(sem_pos.nome)}." if len(sem_pos) else ""))
 
@@ -805,13 +845,31 @@ with aba_op:
             vars_c = g1.multiselect("Variáveis", ["receita_aj", "ebitda_aj", "ebitda_aj_pos_arrend"],
                                     default=["receita_aj", "ebitda_aj"], format_func=lambda k: ROT[k], key="op_fin_vars")
             macro_sel = g1.multiselect("Macro", macro_aba.OPCOES_MACRO, default=["PIB nominal", "IPCA"], key="op_fin_macro")
+            xs = list(d.x)
+            if len(xs) > 1:
+                p0, p1 = g1.select_slider("Prazo analisado", options=xs, value=(xs[max(0, len(xs) - 6)] if per == "Anual" else xs[max(0, len(xs) - 21)], xs[-1]),
+                                          key=f"op_fin_prazo_{op}_{per}")
+            else:
+                p0 = p1 = xs[0]
+            i0, i1 = xs.index(p0), xs.index(p1)
+            janela = xs[i0:i1 + 1]
             fins = pd.Series(d.dt_fim.to_numpy(), index=d.x.to_numpy())
             fig = go.Figure()
+            resumo = []
+            anos_j = max((d.dt_fim.iloc[i1] - d.dt_fim.iloc[i0]).days / 365.25, 1e-9)
             for v in vars_c:
                 s = pd.Series(d[v].to_numpy(), index=d.x.to_numpy())
-                y = s.pct_change() if modo_f == "a/a" and per == "Anual" else (
-                    s / s.shift(4) - 1 if modo_f == "a/a" else 100 * s / s.dropna().iloc[0] if s.notna().any() else s)
+                if modo_f == "a/a":           # a/a calculado na série inteira e depois recortado (o 1º período da janela tem variação)
+                    y = (s.pct_change() if per == "Anual" else s / s.shift(4) - 1).loc[janela]
+                else:
+                    sj = s.loc[janela]
+                    b0 = sj.first_valid_index()
+                    y = 100 * sj / sj[b0] if b0 is not None and sj[b0] > 0 else sj * np.nan
                 fig.add_trace(go.Scatter(x=y.index, y=y.values, mode="lines+markers", name=ROT[v]))
+                a_, b_ = s.loc[p0], s.loc[p1]
+                ok_ = pd.notna(a_) and pd.notna(b_) and a_ > 0 and b_ > 0
+                resumo.append({"Série": ROT[v], "Acumulado": b_ / a_ - 1 if ok_ else np.nan,
+                               "Ao ano (CAGR)": (b_ / a_) ** (1 / anos_j) - 1 if ok_ and i1 > i0 else np.nan})
             if macro_sel:
                 try:
                     niv = macro_aba.niveis_macro(fins, 12, False, pasta_m)
@@ -819,33 +877,51 @@ with aba_op:
                         ant = macro_aba.niveis_macro(fins - pd.DateOffset(years=1), 12, False, pasta_m)
                     for nome in macro_sel:
                         if modo_f == "a/a":
-                            y = niv[nome] / ant[nome] - 1
+                            y = (niv[nome] / ant[nome] - 1).loc[janela]
                         else:
-                            b0 = niv[nome].first_valid_index()
-                            y = 100 * niv[nome] / niv[nome][b0] if b0 is not None else niv[nome]
+                            nj = niv[nome].loc[janela]
+                            b0 = nj.first_valid_index()
+                            y = 100 * nj / nj[b0] if b0 is not None else nj
                         fig.add_trace(macro_aba.go_scatter(list(y.index), y.values, nome))
+                        a_, b_ = niv[nome].loc[p0], niv[nome].loc[p1]
+                        ok_ = pd.notna(a_) and pd.notna(b_) and a_ > 0
+                        resumo.append({"Série": nome, "Acumulado": b_ / a_ - 1 if ok_ else np.nan,
+                                       "Ao ano (CAGR)": (b_ / a_) ** (1 / anos_j) - 1 if ok_ and i1 > i0 else np.nan})
                 except Exception as e:  # noqa: BLE001
                     st.caption(f"Macro indisponível: {e}")
             if modo_f == "a/a":
                 fig.add_hline(y=0, line_dash="dot", line_color="gray")
-            g2.plotly_chart(layout(fig, "Crescimento " + ("contra o mesmo período do ano anterior" if modo_f == "a/a" else "acumulado (base 100)"),
+            g2.plotly_chart(layout(fig, f"Crescimento {p0} → {p1} — " + ("contra o mesmo período do ano anterior" if modo_f == "a/a" else "acumulado (base 100 no início)"),
                                    pct=modo_f == "a/a", x=True), width="stretch")
-            g2.caption("Macro no mesmo recorte (12 meses até a data de fim): IPCA e R$/US$ pela média do período; PIB nominal "
-                       "= volume (IBGE) × nível médio de preços (IPCA). R$/US$ positivo = real se desvalorizou. Fonte macro: "
-                       "IBGE e BCB via Price Discovery Scanning.")
+            if resumo and i1 > i0:
+                g1.markdown(f"**{p0} → {p1}** ({anos_j:.1f} anos)")
+                g1.dataframe(pd.DataFrame(resumo), hide_index=True, width="stretch",
+                             column_config={"Acumulado": st.column_config.NumberColumn(format="percent"),
+                                            "Ao ano (CAGR)": st.column_config.NumberColumn(format="percent")})
+            g2.caption("Escolha o início e o fim na barra 'Prazo analisado'. Acumulado e CAGR comparam o nível do fim com o do "
+                       "início (cálculo próprio). Macro no mesmo recorte (12 meses até a data de fim): IPCA e R\\$/US\\$ pela média "
+                       "do período; PIB nominal = volume (IBGE) × nível médio de preços (IPCA). R\\$/US\\$ positivo = real se "
+                       "desvalorizou. Fonte macro: IBGE e BCB via Price Discovery Scanning.")
 
             # prazos, ciclo e perfil da dívida
             st.markdown("**Prazos, ciclo financeiro e perfil de vencimentos**")
             k1, k2 = st.columns(2)
-            fig = go.Figure([go.Scatter(x=d.x, y=d[c_], name=ROT[c_], mode="lines+markers")
-                             for c_ in ("pmr_dias", "pmp_dias", "ciclo_financeiro_dias")])
-            k1.plotly_chart(layout(fig, "Prazos médios e ciclo financeiro (dias)", x=True), width="stretch")
+            pares_pz = fin[(fin.tipo == d.tipo.iloc[0]) & fin.dt_fim.isin(d.dt_fim) & (fin.id != op)]
+            med_pz = pares_pz.groupby("dt_fim")[["pmr_dias", "pmp_dias", "ciclo_financeiro_dias"]].median()
+            n_pz = pares_pz.groupby("dt_fim").pmr_dias.count()
+            fig = go.Figure()
+            for c_, cor_ in (("pmr_dias", "#1f77b4"), ("pmp_dias", "#ff7f0e"), ("ciclo_financeiro_dias", "#2ca02c")):
+                fig.add_trace(go.Scatter(x=d.x, y=d[c_], name=ROT[c_], mode="lines+markers", line=dict(color=cor_, width=3)))
+                fig.add_trace(go.Scatter(x=d.x, y=d.dt_fim.map(med_pz[c_]), name=f"{ROT[c_].split(' (')[0]} — mediana das SPEs",
+                                         mode="lines", line=dict(color=cor_, dash="dash", width=1.5)))
+            k1.plotly_chart(layout(fig, "Prazos médios e ciclo financeiro (dias) vs. mediana das SPEs", h=400, x=True), width="stretch")
             fig = go.Figure([go.Bar(x=d.x, y=d.divida_cp, name="Curto prazo (BP 2.01.04)"),
                              go.Bar(x=d.x, y=d.divida_lp, name="Longo prazo (BP 2.02.01)")])
             fig.update_layout(barmode="stack")
-            k2.plotly_chart(layout(fig, "Empréstimos e financiamentos: curto x longo prazo (R$ mm)", x=True), width="stretch")
+            k2.plotly_chart(layout(fig, "Empréstimos e financiamentos: curto x longo prazo (R$ mm)", h=400, x=True), width="stretch")
             st.caption("PMR = clientes ÷ receita líquida ajustada × dias; PMP = fornecedores ÷ custo (sem construção) × dias; "
-                       "ciclo financeiro = PMR − PMP (concessão não tem estoque relevante). Cálculo próprio sobre a CVM.")
+                       "ciclo financeiro = PMR − PMP (concessão não tem estoque relevante). Linhas tracejadas: mediana das demais "
+                       f"SPEs com DFP/ITR no mesmo período (até {int(n_pz.max()) if len(n_pz) else 0} SPEs). Cálculo próprio sobre a CVM.")
             deb_o = deb[deb["id"] == op] if not deb.empty else pd.DataFrame()
             if len(deb_o):
                 cdo = custo_debentures(deb_o, pj)
