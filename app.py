@@ -408,6 +408,25 @@ def debentures(cad: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return d, fonte
 
 
+def motivo_sem_icsd(r) -> tuple[str, str]:
+    """(motivo, detalhe do período) quando o ICSD fica vazio — diagnóstico próprio sobre os campos DFC/BP da CVM."""
+    if pd.isna(r.get("ebitda")):
+        return "EBITDA não calculado (DRE/DFC do período incompleta)", ""
+    div_b, serv, misto = r.get("divida_bruta"), r.get("servico_divida_pago"), r.get("servico_div_arrend_misto")
+    if pd.isna(serv) or serv == 0:
+        if pd.isna(div_b) or div_b <= 0:
+            return "SPE sem dívida no balanço, não há serviço da dívida a cobrir", ""
+        if pd.notna(misto) and misto != 0:
+            return ("a DFC paga dívida e arrendamento numa única linha; o coletor não separa a parte da dívida "
+                    "(para não contar arrendamento duas vezes, já que ele sai do numerador); juros pagos não aparecem "
+                    "destacados (podem estar na mesma linha ou capitalizados, típico de SPE em obra)"), f"linha mista {fmt_mm(misto)}, dívida {fmt_mm(div_b)}"
+        return ("juros e principal pagos não aparecem na DFC: compatível com carência e juros capitalizados, ou linha "
+                "com nome não reconhecido pelo coletor (conferir a DFC na CVM)"), f"dívida {fmt_mm(div_b)}"
+    if serv < 0:
+        return "serviço da dívida com sinal inesperado na DFC", ""
+    return "dado insuficiente no período", ""
+
+
 # ================================================================== estrutura societária (esquema)
 def _n(s_) -> str:
     import unicodedata
@@ -1138,6 +1157,17 @@ with aba_op:
             for nivel, corl in ((1.0, "#C0504D"), (1.2, "#E69F00"), (1.3, "#2E6FBA")):
                 fig.add_hline(y=nivel, line_dash="dot", line_color=corl, annotation_text=f"ICSD {nivel:.1f}x".replace(".", ","), annotation_position="top left", annotation_font_size=11)
             k1.plotly_chart(layout(fig, "ICSD (x)", x=True), width="stretch")
+            sem_icsd = d[d.icsd.isna()]
+            if len(sem_icsd):
+                mot = [(motivo_sem_icsd(r), x) for x, r in zip(sem_icsd.x, sem_icsd.to_dict("records"))]
+                partes = []
+                for m_ in dict.fromkeys(m for (m, _), _x in mot):
+                    det = ", ".join(f"{x}" + (f" [{dt}]" if dt else "") for (mm, dt), x in mot if mm == m_)
+                    partes.append(f"**{m_}** — {det}")
+                todos = len(sem_icsd) == len(d)
+                (k1.warning if todos else k1.caption)(
+                    ("ICSD vazio em todos os períodos. " if todos else "Períodos sem ICSD: ") + "; ".join(partes) +
+                    ". (Diagnóstico próprio a partir das linhas da DFC/BP na CVM.)")
             fig = go.Figure([go.Scatter(x=d.x, y=d.dl_ebitda_aj_ifrs16, mode="lines+markers", name="DL c/ arrend. ÷ EBITDA aj. (IFRS 16)"),
                              go.Scatter(x=d.x, y=d.dl_ebitda_aj_pre_ifrs16, mode="lines+markers", name="DL s/ arrend. ÷ EBITDA aj. pós-arrend. (pré-IFRS 16)")])
             k2.plotly_chart(layout(fig, "Dívida líquida ÷ EBITDA ajustado (x)", x=True), width="stretch")
