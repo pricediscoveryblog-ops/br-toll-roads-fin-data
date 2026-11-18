@@ -203,20 +203,26 @@ def financeiro(cad: pd.DataFrame, traf: pd.DataFrame) -> pd.DataFrame:
     # pagamentos de arrendamento (principal + juros), para comparar com o EBITDA ajustado pós-arrendamento
     f["fco_comp_pos_arrend"] = f["fco"] - nz(f["pagamento_arrendamento"])
     f["conversao_fco"] = div(f["fco_comp_pos_arrend"], f["ebitda_aj_pos_arrend"])
-    # ICSD. Regra geral: arrendamento sai do numerador (EBITDA aj. pós-arrend.) e o denominador é juros + principal da
-    # dívida. Quando a DFC só traz uma linha que mistura dívida e arrendamento (sem juros/principal da dívida destacados),
-    # todo o arrendamento vai para o denominador junto com a linha mista e o numerador fica EBITDA aj. − IR − capex manut.
+    # ICSD em duas fórmulas (cálculo próprio):
+    #  (1) regra geral: (EBITDA aj. pós-arrend. − IR/CS pagos − capex manut.) ÷ (juros + principal da dívida, DFC)
+    #  (2) arrendamento no denominador: (EBITDA aj. − IR/CS pagos − capex manut.) ÷ (juros + principal da dívida +
+    #      todos os pagamentos de arrendamento). Quando a DFC só traz uma linha que mistura dívida e arrendamento,
+    #      só a fórmula (2) é calculável, com a linha mista no lugar de dívida + arrendamento.
     if "servico_div_arrend_misto" not in f:
         f["servico_div_arrend_misto"] = np.nan
     serv_ok = f["servico_divida_pago"].fillna(0) > 0
     f["icsd_base_mista"] = ~serv_ok & (f["servico_div_arrend_misto"].fillna(0) > 0)
-    base_num = f["ebitda_aj_pos_arrend"].where(~f["icsd_base_mista"], f["ebitda_aj"])
-    f["servico_icsd"] = f["servico_divida_pago"].where(
+    f["servico_icsd"] = f["servico_divida_pago"]
+    f["servico_icsd_arr"] = (f["servico_divida_pago"] + nz(f["pagamento_arrendamento"])).where(
         ~f["icsd_base_mista"], f["servico_div_arrend_misto"] + nz(f["pagamento_arrendamento"]))
-    f["cfads"] = base_num - nz(f["ir_csll_pagos"]) - nz(f["capex_manut"])
-    f["cfads_sem_manut"] = base_num - nz(f["ir_csll_pagos"])
+    f["cfads"] = f["ebitda_aj_pos_arrend"] - nz(f["ir_csll_pagos"]) - nz(f["capex_manut"])
+    f["cfads_sem_manut"] = f["ebitda_aj_pos_arrend"] - nz(f["ir_csll_pagos"])
+    f["cfads_arr"] = f["ebitda_aj"] - nz(f["ir_csll_pagos"]) - nz(f["capex_manut"])
+    f["cfads_arr_sem_manut"] = f["ebitda_aj"] - nz(f["ir_csll_pagos"])
     f["icsd"] = div(f["cfads"], f["servico_icsd"])
     f["icsd_sem_manut"] = div(f["cfads_sem_manut"], f["servico_icsd"])
+    f["icsd_arr"] = div(f["cfads_arr"], f["servico_icsd_arr"])
+    f["icsd_arr_sem_manut"] = div(f["cfads_arr_sem_manut"], f["servico_icsd_arr"])
     f["divida_bruta"] = f["divida_bruta_ex_arrend"]
     f["divida_liquida"] = f["div_liq_sem_arrend"]
     f["divida_liquida_ifrs16"] = f["div_liq_com_arrend"]
@@ -427,9 +433,8 @@ def motivo_sem_icsd(r) -> tuple[str, str]:
         if pd.isna(div_b) or div_b <= 0:
             return "SPE sem dívida no balanço, não há serviço da dívida a cobrir", ""
         if pd.notna(misto) and misto != 0:
-            return ("a DFC paga dívida e arrendamento numa única linha; o coletor não separa a parte da dívida "
-                    "(para não contar arrendamento duas vezes, já que ele sai do numerador); juros pagos não aparecem "
-                    "destacados (podem estar na mesma linha ou capitalizados, típico de SPE em obra)"), f"linha mista {fmt_mm(misto)}, dívida {fmt_mm(div_b)}"
+            return ("a DFC paga dívida e arrendamento numa única linha, então a regra geral (arrendamento fora do "
+                    "numerador) não é calculável; só a fórmula com arrendamento no denominador aparece"), f"linha mista {fmt_mm(misto)}, dívida {fmt_mm(div_b)}"
         return ("juros e principal pagos não aparecem na DFC: compatível com carência e juros capitalizados, ou linha "
                 "com nome não reconhecido pelo coletor (conferir a DFC na CVM)"), f"dívida {fmt_mm(div_b)}"
     if serv < 0:
@@ -624,8 +629,10 @@ ROT = {"veic_eq": "Veículos equivalentes", "receita_aj": "Receita líquida ajus
        "ebitda_aj": "EBITDA ajustado (R$ mm)", "ebitda_aj_pos_arrend": "EBITDA ajustado pós-arrendamento (R$ mm)",
        "divida_bruta": "Dívida bruta (R$ mm)", "divida_liquida": "Dívida líquida (R$ mm)",
        "capex": "Capex (R$ mm)", "capex_manut": "Capex de manutenção (R$ mm)",
-       "margem_ebitda_aj": "Margem EBITDA ajustada", "icsd": "ICSD (com capex de manutenção)",
-       "icsd_sem_manut": "ICSD (sem pagamento da provisão)", "dl_ebitda_aj_ifrs16": "DL c/ arrend. ÷ EBITDA aj.",
+       "margem_ebitda_aj": "Margem EBITDA ajustada", "icsd": "ICSD (1) regra geral, com capex de manutenção",
+       "icsd_arr": "ICSD (2) arrend. no denominador, com capex de manutenção",
+       "icsd_arr_sem_manut": "ICSD (2) arrend. no denominador, sem provisão",
+       "icsd_sem_manut": "ICSD (1) regra geral, sem provisão", "dl_ebitda_aj_ifrs16": "DL c/ arrend. ÷ EBITDA aj.",
        "dl_ebitda_aj_pre_ifrs16": "DL s/ arrend. ÷ EBITDA aj. pós-arrend.", "custo_implicito": "Custo implícito da dívida",
        "capex_por_veq": "Capex por veíc. eq. (R$)", "capex_manut_por_veq": "Capex manut. por veíc. eq. (R$)",
        "capex_por_km": "Capex por km (R$ mm)", "capex_manut_por_km": "Capex manut. por km (R$ mm)",
@@ -1161,22 +1168,31 @@ with aba_op:
             # ICSD e alavancagem
             st.markdown("**ICSD e alavancagem**")
             k1, k2 = st.columns(2)
-            fig = go.Figure([go.Scatter(x=d.x, y=d.icsd, mode="lines+markers", name="ICSD (com capex de manutenção)", line=dict(width=3)),
-                             go.Scatter(x=d.x, y=d.icsd_sem_manut, mode="lines+markers", name="ICSD (sem pagamento da provisão)",
-                                        line=dict(dash="dash"))])
-            for nivel, corl in ((1.0, "#C0504D"), (1.2, "#E69F00"), (1.3, "#2E6FBA")):
+            AZ, LJ = "#2E6FBA", "#E69F00"
+            fig = go.Figure([
+                go.Scatter(x=d.x, y=d.icsd, mode="lines+markers", name="(1) Regra geral — com capex de manutenção",
+                           line=dict(width=3, color=AZ)),
+                go.Scatter(x=d.x, y=d.icsd_sem_manut, mode="lines+markers", name="(1) Regra geral — sem pagamento da provisão",
+                           line=dict(dash="dash", color=AZ)),
+                go.Scatter(x=d.x, y=d.icsd_arr, mode="lines+markers", name="(2) Arrend. no denominador — com capex de manutenção",
+                           line=dict(width=3, color=LJ)),
+                go.Scatter(x=d.x, y=d.icsd_arr_sem_manut, mode="lines+markers", name="(2) Arrend. no denominador — sem pagamento da provisão",
+                           line=dict(dash="dash", color=LJ))])
+            for nivel, corl in ((1.0, "#C0504D"), (1.2, "#8C8C8C"), (1.3, "#4D4D4D")):
                 fig.add_hline(y=nivel, line_dash="dot", line_color=corl, annotation_text=f"ICSD {nivel:.1f}x".replace(".", ","), annotation_position="top left", annotation_font_size=11)
-            mx_ = d[d.icsd_base_mista.fillna(False).astype(bool) & d.icsd.notna()]
+            mx_ = d[d.icsd_base_mista.fillna(False).astype(bool) & d.icsd_arr.notna()]
             if len(mx_):
-                fig.add_trace(go.Scatter(x=mx_.x, y=mx_.icsd, mode="markers", name="base: linha mista dívida + arrendamento",
+                fig.add_trace(go.Scatter(x=mx_.x, y=mx_.icsd_arr, mode="markers", name="(2) com linha mista dívida + arrendamento",
                                          marker=dict(symbol="diamond-open", size=13, color="#C0504D", line=dict(width=2))))
             k1.plotly_chart(layout(fig, "ICSD (x)", x=True), width="stretch")
+            k1.caption("(1) Regra geral = (EBITDA aj. − arrendamento − IR/CS pagos − capex de manutenção) ÷ (juros + principal da "
+                       "dívida). (2) = (EBITDA aj. − IR/CS pagos − capex de manutenção) ÷ (juros + principal + arrendamento). "
+                       "Com ICSD acima de 1x, (2) fica abaixo de (1); a distância cresce com o peso do arrendamento. Tracejado: "
+                       "ignora o pagamento da provisão de manutenção. Cálculo próprio com dados da DFC (CVM).")
             if len(mx_):
                 k1.caption("◇ Períodos em que a DFC paga dívida e arrendamento numa única linha (" + ", ".join(mx_.x.astype(str)) +
-                           "): ICSD = (EBITDA aj. − IR/CS pagos − capex de manutenção) ÷ (linha mista + demais pagamentos de "
-                           "arrendamento). Todo o arrendamento fica no denominador; com ICSD acima de 1x isso dá um número um "
-                           "pouco menor que a regra geral, portanto não é estritamente comparável a ela.")
-                baixo_ = mx_[(mx_.servico_icsd / mx_.divida_bruta) < 0.04]
+                           "): só a fórmula (2) é calculável, com a linha mista no denominador.")
+                baixo_ = mx_[(mx_.servico_icsd_arr / mx_.divida_bruta) < 0.04]
                 if len(baixo_):
                     k1.warning("Atenção em " + ", ".join(baixo_.x.astype(str)) + ": o serviço considerado é menor que 4% da "
                                "dívida bruta, abaixo do que só os juros custariam. Os juros provavelmente estão capitalizados ou "
@@ -1188,33 +1204,34 @@ with aba_op:
                 for m_ in dict.fromkeys(m for (m, _), _x in mot):
                     det = ", ".join(f"{x}" + (f" [{dt}]" if dt else "") for (mm, dt), x in mot if mm == m_)
                     partes.append(f"**{m_}** — {det}")
-                todos = len(sem_icsd) == len(d)
+                todos = d.icsd.isna().all() and d.icsd_arr.isna().all()
                 (k1.warning if todos else k1.caption)(
-                    ("ICSD vazio em todos os períodos. " if todos else "Períodos sem ICSD: ") + "; ".join(partes) +
+                    ("ICSD vazio em todos os períodos. " if todos else "Períodos sem ICSD (1) regra geral: ") + "; ".join(partes) +
                     ". (Diagnóstico próprio a partir das linhas da DFC/BP na CVM.)")
             fig = go.Figure([go.Scatter(x=d.x, y=d.dl_ebitda_aj_ifrs16, mode="lines+markers", name="DL c/ arrend. ÷ EBITDA aj. (IFRS 16)"),
                              go.Scatter(x=d.x, y=d.dl_ebitda_aj_pre_ifrs16, mode="lines+markers", name="DL s/ arrend. ÷ EBITDA aj. pós-arrend. (pré-IFRS 16)")])
             k2.plotly_chart(layout(fig, "Dívida líquida ÷ EBITDA ajustado (x)", x=True), width="stretch")
-            st.caption("ICSD = (EBITDA ajustado − pagamentos de arrendamento − IR/CS pagos − capex de manutenção) ÷ (juros + "
-                       "principal pagos, DFC); se a DFC mistura dívida e arrendamento numa linha, o arrendamento vai todo ao denominador (◇). "
-                       "Versão sem manutenção ignora o pagamento da provisão. Alavancagem como no Price "
+            st.caption("Alavancagem como no Price "
                        "Discovery Scanning: com arrendamento (IFRS 16) contra EBITDA ajustado; sem arrendamento contra EBITDA "
                        "ajustado pós-arrendamento.")
-            u_ = d.dropna(subset=["icsd", "veic_eq", "receita_aj"]).tail(1)
+            u_ = d.assign(_ok=d.icsd.notna() | d.icsd_arr.notna()).query("_ok").dropna(subset=["veic_eq", "receita_aj"]).tail(1)
             if len(u_):
                 r_ = u_.iloc[0]
                 tar = r_.receita_aj / r_.veic_eq
                 be = []
                 for alvo_ in (1.0, 1.2, 1.3):
-                    folga = r_.cfads - alvo_ * r_.servico_icsd
-                    veq_be = r_.veic_eq - folga / tar
-                    be.append({"ICSD alvo": f"{alvo_:.1f}x", "Veíc. eq. de equilíbrio (mi)": veq_be / 1e6,
-                               "Variação tolerada do tráfego": veq_be / r_.veic_eq - 1})
+                    lin = {"ICSD alvo": f"{alvo_:.1f}x"}
+                    for rot_, cf_, sv_ in (("(1)", "cfads", "servico_icsd"), ("(2)", "cfads_arr", "servico_icsd_arr")):
+                        if pd.notna(r_[sv_]) and r_[sv_] > 0:
+                            veq_be = r_.veic_eq - (r_[cf_] - alvo_ * r_[sv_]) / tar
+                            lin[f"{rot_} Veíc. eq. de equilíbrio (mi)"] = veq_be / 1e6
+                            lin[f"{rot_} Variação tolerada do tráfego"] = veq_be / r_.veic_eq - 1
+                    be.append(lin)
                 st.markdown(f"**Tráfego de equilíbrio — {r_.x}** (hipótese própria: receita proporcional ao tráfego, "
                             f"custos, IR, arrendamento e capex de manutenção fixos; tráfego atual {r_.veic_eq / 1e6:,.1f} mi veíc. eq.)")
                 st.dataframe(pd.DataFrame(be), hide_index=True, width="content",
-                             column_config={"Veíc. eq. de equilíbrio (mi)": st.column_config.NumberColumn(format="%.1f"),
-                                            "Variação tolerada do tráfego": st.column_config.NumberColumn(format="percent")})
+                             column_config={**{f"{k_} Veíc. eq. de equilíbrio (mi)": st.column_config.NumberColumn(format="%.1f") for k_ in ("(1)", "(2)")},
+                                            **{f"{k_} Variação tolerada do tráfego": st.column_config.NumberColumn(format="percent") for k_ in ("(1)", "(2)")}})
                 st.caption("IR fixo é conservador (com menos receita o IR cairia). Variação negativa = queda de tráfego que a "
                            "SPE suporta até o ICSD alvo; positiva = já está abaixo do alvo.")
 
@@ -1288,7 +1305,7 @@ with aba_op:
                 cols_f = ["x", "fonte", "receita_aj", "receita_construcao", "ebitda", "prov_manut_constituicao", "ebitda_aj",
                           "pagamento_arrendamento", "ebitda_aj_pos_arrend", "ir_csll_pagos", "capex", "capex_manut",
                           "capex_manut_aprox", "prov_manut_saldo", "cfads", "juros_pagos", "principal_pago",
-                          "servico_divida_pago", "servico_div_arrend_misto", "servico_icsd", "icsd_base_mista", "icsd", "icsd_sem_manut", "divida_bruta", "caixa", "divida_liquida",
+                          "servico_divida_pago", "servico_div_arrend_misto", "servico_icsd_arr", "icsd_base_mista", "icsd", "icsd_sem_manut", "icsd_arr", "icsd_arr_sem_manut", "divida_bruta", "caixa", "divida_liquida",
                           "passivo_arrendamento", "dl_ebitda_aj_ifrs16", "dl_ebitda_aj_pre_ifrs16", "custo_implicito",
                           "pmr_dias", "pmp_dias", "ciclo_financeiro_dias", "veic_eq", "tarifa_media", "notas"]
                 tab_f = d[[c_ for c_ in cols_f if c_ in d.columns]]
@@ -1325,7 +1342,7 @@ with aba_comp:
              "vdm_eq_por_km", "pior_queda_anual"]
     comp = sel[["id", "nome", "grupo", "regiao_nome", "uf_principal", "agencia", "ultimo_mes"] + num_t].copy()
     num_f = ["receita_aj", "ebitda_aj", "margem_ebitda_aj", "ebitda_aj_pos_arrend", "capex", "capex_manut", "icsd",
-             "icsd_sem_manut", "dl_ebitda_aj_ifrs16", "dl_ebitda_aj_pre_ifrs16", "divida_bruta", "divida_liquida",
+             "icsd_sem_manut", "icsd_arr", "icsd_arr_sem_manut", "dl_ebitda_aj_ifrs16", "dl_ebitda_aj_pre_ifrs16", "divida_bruta", "divida_liquida",
              "custo_implicito", "tarifa_media", "capex_por_veq", "capex_manut_por_veq", "capex_por_km", "capex_manut_por_km",
              "ebitda_aj_por_km", "pmr_dias", "pmp_dias", "ciclo_financeiro_dias", "pct_divida_cp", "fco_comp_pos_arrend",
              "conversao_fco"]
