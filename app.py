@@ -203,10 +203,20 @@ def financeiro(cad: pd.DataFrame, traf: pd.DataFrame) -> pd.DataFrame:
     # pagamentos de arrendamento (principal + juros), para comparar com o EBITDA ajustado pós-arrendamento
     f["fco_comp_pos_arrend"] = f["fco"] - nz(f["pagamento_arrendamento"])
     f["conversao_fco"] = div(f["fco_comp_pos_arrend"], f["ebitda_aj_pos_arrend"])
-    f["cfads"] = f["ebitda_aj_pos_arrend"] - nz(f["ir_csll_pagos"]) - nz(f["capex_manut"])
-    f["cfads_sem_manut"] = f["ebitda_aj_pos_arrend"] - nz(f["ir_csll_pagos"])
-    f["icsd"] = div(f["cfads"], f["servico_divida_pago"])
-    f["icsd_sem_manut"] = div(f["cfads_sem_manut"], f["servico_divida_pago"])
+    # ICSD. Regra geral: arrendamento sai do numerador (EBITDA aj. pós-arrend.) e o denominador é juros + principal da
+    # dívida. Quando a DFC só traz uma linha que mistura dívida e arrendamento (sem juros/principal da dívida destacados),
+    # todo o arrendamento vai para o denominador junto com a linha mista e o numerador fica EBITDA aj. − IR − capex manut.
+    if "servico_div_arrend_misto" not in f:
+        f["servico_div_arrend_misto"] = np.nan
+    serv_ok = f["servico_divida_pago"].fillna(0) > 0
+    f["icsd_base_mista"] = ~serv_ok & (f["servico_div_arrend_misto"].fillna(0) > 0)
+    base_num = f["ebitda_aj_pos_arrend"].where(~f["icsd_base_mista"], f["ebitda_aj"])
+    f["servico_icsd"] = f["servico_divida_pago"].where(
+        ~f["icsd_base_mista"], f["servico_div_arrend_misto"] + nz(f["pagamento_arrendamento"]))
+    f["cfads"] = base_num - nz(f["ir_csll_pagos"]) - nz(f["capex_manut"])
+    f["cfads_sem_manut"] = base_num - nz(f["ir_csll_pagos"])
+    f["icsd"] = div(f["cfads"], f["servico_icsd"])
+    f["icsd_sem_manut"] = div(f["cfads_sem_manut"], f["servico_icsd"])
     f["divida_bruta"] = f["divida_bruta_ex_arrend"]
     f["divida_liquida"] = f["div_liq_sem_arrend"]
     f["divida_liquida_ifrs16"] = f["div_liq_com_arrend"]
@@ -1156,7 +1166,21 @@ with aba_op:
                                         line=dict(dash="dash"))])
             for nivel, corl in ((1.0, "#C0504D"), (1.2, "#E69F00"), (1.3, "#2E6FBA")):
                 fig.add_hline(y=nivel, line_dash="dot", line_color=corl, annotation_text=f"ICSD {nivel:.1f}x".replace(".", ","), annotation_position="top left", annotation_font_size=11)
+            mx_ = d[d.icsd_base_mista.fillna(False).astype(bool) & d.icsd.notna()]
+            if len(mx_):
+                fig.add_trace(go.Scatter(x=mx_.x, y=mx_.icsd, mode="markers", name="base: linha mista dívida + arrendamento",
+                                         marker=dict(symbol="diamond-open", size=13, color="#C0504D", line=dict(width=2))))
             k1.plotly_chart(layout(fig, "ICSD (x)", x=True), width="stretch")
+            if len(mx_):
+                k1.caption("◇ Períodos em que a DFC paga dívida e arrendamento numa única linha (" + ", ".join(mx_.x.astype(str)) +
+                           "): ICSD = (EBITDA aj. − IR/CS pagos − capex de manutenção) ÷ (linha mista + demais pagamentos de "
+                           "arrendamento). Todo o arrendamento fica no denominador; com ICSD acima de 1x isso dá um número um "
+                           "pouco menor que a regra geral, portanto não é estritamente comparável a ela.")
+                baixo_ = mx_[(mx_.servico_icsd / mx_.divida_bruta) < 0.04]
+                if len(baixo_):
+                    k1.warning("Atenção em " + ", ".join(baixo_.x.astype(str)) + ": o serviço considerado é menor que 4% da "
+                               "dívida bruta, abaixo do que só os juros custariam. Os juros provavelmente estão capitalizados ou "
+                               "em outra linha, e o ICSD desses períodos tende a estar superestimado (avaliação própria).")
             sem_icsd = d[d.icsd.isna()]
             if len(sem_icsd):
                 mot = [(motivo_sem_icsd(r), x) for x, r in zip(sem_icsd.x, sem_icsd.to_dict("records"))]
@@ -1172,7 +1196,8 @@ with aba_op:
                              go.Scatter(x=d.x, y=d.dl_ebitda_aj_pre_ifrs16, mode="lines+markers", name="DL s/ arrend. ÷ EBITDA aj. pós-arrend. (pré-IFRS 16)")])
             k2.plotly_chart(layout(fig, "Dívida líquida ÷ EBITDA ajustado (x)", x=True), width="stretch")
             st.caption("ICSD = (EBITDA ajustado − pagamentos de arrendamento − IR/CS pagos − capex de manutenção) ÷ (juros + "
-                       "principal pagos, DFC). Versão sem manutenção ignora o pagamento da provisão. Alavancagem como no Price "
+                       "principal pagos, DFC); se a DFC mistura dívida e arrendamento numa linha, o arrendamento vai todo ao denominador (◇). "
+                       "Versão sem manutenção ignora o pagamento da provisão. Alavancagem como no Price "
                        "Discovery Scanning: com arrendamento (IFRS 16) contra EBITDA ajustado; sem arrendamento contra EBITDA "
                        "ajustado pós-arrendamento.")
             u_ = d.dropna(subset=["icsd", "veic_eq", "receita_aj"]).tail(1)
@@ -1181,7 +1206,7 @@ with aba_op:
                 tar = r_.receita_aj / r_.veic_eq
                 be = []
                 for alvo_ in (1.0, 1.2, 1.3):
-                    folga = r_.cfads - alvo_ * r_.servico_divida_pago
+                    folga = r_.cfads - alvo_ * r_.servico_icsd
                     veq_be = r_.veic_eq - folga / tar
                     be.append({"ICSD alvo": f"{alvo_:.1f}x", "Veíc. eq. de equilíbrio (mi)": veq_be / 1e6,
                                "Variação tolerada do tráfego": veq_be / r_.veic_eq - 1})
@@ -1263,7 +1288,7 @@ with aba_op:
                 cols_f = ["x", "fonte", "receita_aj", "receita_construcao", "ebitda", "prov_manut_constituicao", "ebitda_aj",
                           "pagamento_arrendamento", "ebitda_aj_pos_arrend", "ir_csll_pagos", "capex", "capex_manut",
                           "capex_manut_aprox", "prov_manut_saldo", "cfads", "juros_pagos", "principal_pago",
-                          "servico_divida_pago", "icsd", "icsd_sem_manut", "divida_bruta", "caixa", "divida_liquida",
+                          "servico_divida_pago", "servico_div_arrend_misto", "servico_icsd", "icsd_base_mista", "icsd", "icsd_sem_manut", "divida_bruta", "caixa", "divida_liquida",
                           "passivo_arrendamento", "dl_ebitda_aj_ifrs16", "dl_ebitda_aj_pre_ifrs16", "custo_implicito",
                           "pmr_dias", "pmp_dias", "ciclo_financeiro_dias", "veic_eq", "tarifa_media", "notas"]
                 tab_f = d[[c_ for c_ in cols_f if c_ in d.columns]]
