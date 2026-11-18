@@ -188,7 +188,7 @@ def financeiro(cad: pd.DataFrame, traf: pd.DataFrame) -> pd.DataFrame:
     f["dt_fim"] = pd.to_datetime(f["dt_fim"])
     for c in ("prov_manut_constituicao", "prov_manut_avp", "prov_manut_pago_dfc", "prov_manut_saldo", "capex_manut",
               "divida_cp", "divida_lp", "pagamento_arrendamento", "ir_csll_pagos", "servico_divida_pago", "juros_pagos",
-              "capex_organico", "capex_total", "clientes", "fornecedores", "cpv"):
+              "capex_organico", "capex_total", "clientes", "fornecedores", "cpv", "fco", "fco_reportado"):
         if c not in f:
             f[c] = np.nan
     if "capex_manut_aprox" not in f:
@@ -199,6 +199,10 @@ def financeiro(cad: pd.DataFrame, traf: pd.DataFrame) -> pd.DataFrame:
     f["margem_ebitda_aj"] = div(f["ebitda_aj"], f["receita_aj"])
     f["margem_ebitda_aj_pos_arrend"] = div(f["ebitda_aj_pos_arrend"], f["receita_aj"])
     f["capex"] = f["capex_organico"]
+    # FCO comparável (Price Discovery Scanning: sem juros e dividendos pagos/recebidos classificados no FCO) menos os
+    # pagamentos de arrendamento (principal + juros), para comparar com o EBITDA ajustado pós-arrendamento
+    f["fco_comp_pos_arrend"] = f["fco"] - nz(f["pagamento_arrendamento"])
+    f["conversao_fco"] = div(f["fco_comp_pos_arrend"], f["ebitda_aj_pos_arrend"])
     f["cfads"] = f["ebitda_aj_pos_arrend"] - nz(f["ir_csll_pagos"]) - nz(f["capex_manut"])
     f["cfads_sem_manut"] = f["ebitda_aj_pos_arrend"] - nz(f["ir_csll_pagos"])
     f["icsd"] = div(f["cfads"], f["servico_divida_pago"])
@@ -404,6 +408,94 @@ def debentures(cad: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return d, fonte
 
 
+# ================================================================== estrutura societária (esquema)
+def _n(s_) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKD", str(s_)).encode("ascii", "ignore").decode().lower()
+
+
+def _rot(t: str, largura: int = 28) -> str:
+    import textwrap
+    return "\\n".join(textwrap.wrap(str(t).replace('"', "'"), largura)) or "?"
+
+
+def esquema_societario(op: str, info, ac: pd.DataFrame, fre: pd.DataFrame, bruto: pd.DataFrame, niveis: int = 3,
+                       pct_min: float = 1.0) -> tuple[str, str]:
+    """DOT (graphviz) de quem investe em quem: acionistas -> SPE, em níveis quando o FRE traz a cadeia de controle.
+    Fontes: Formulário de Referência (posição acionária, item 15.1; colunas de ID do acionista e do acionista
+    relacionado) e a curadoria do cadastro. Linhas 'Ações Tesouraria'/'Outros' e participações zeradas ficam de fora."""
+    arestas, nota = [], []
+    b = pd.DataFrame()
+    if not bruto.empty and "ids" not in bruto:
+        cnpjs = set(fre["cnpj"]) if len(fre) else set()
+        b = bruto[bruto["_cnpj"].isin(cnpjs)].copy() if "_cnpj" in bruto and cnpjs else pd.DataFrame()
+    if len(b):
+        col = lambda *ps, ex=(): next((c for c in b.columns if all(p in _n(c) for p in ps)  # noqa: E731
+                                       and not any(x in _n(c) for x in ex)), None)
+        c_nome = col("acionista", ex=("cpf", "cnpj", "tipo", "id", "controlador", "residente", "relacion", "acordo"))
+        c_id = col("id", "acionista", ex=("relacion",))
+        c_pai = col("relacion")
+        c_pct = col("percentual", "total")
+        c_ctrl = col("controlador")
+        if c_nome and c_id and c_pai and c_pct:
+            b["pct"] = pd.to_numeric(b[c_pct].str.replace(",", "."), errors="coerce")
+            b = b[~b[c_nome].map(_n).str.contains(r"tesouraria|^outros$", regex=True) & (b["pct"].fillna(0) > 0)]
+            if "ano_fre" in b:
+                b = b[b["ano_fre"] == b["ano_fre"].max()]
+            nomes_id = dict(zip(b[c_id].astype(str), b[c_nome]))
+            pai_de = {str(i): str(p_).strip() for i, p_ in zip(b[c_id], b[c_pai])}
+
+            def nivel(i, k=0):
+                p_ = pai_de.get(i, "")
+                return 1 if p_ in ("", "nan", "None") or p_ not in pai_de or k > 10 else 1 + nivel(p_, k + 1)
+            b["_nv"] = [nivel(str(i)) for i in b[c_id]]
+            incluidos: set[str] = set()
+            for _, r in b.sort_values("_nv").iterrows():
+                i = str(r[c_id])
+                nv = r["_nv"]
+                pai_id = pai_de.get(i, "")
+                if nv > niveis or (r["pct"] < pct_min and nv > 1) or (nv > 1 and pai_id not in incluidos):
+                    continue
+                incluidos.add(i)
+                destino = nomes_id.get(pai_id)
+                arestas.append((r[c_nome], destino or info["nome"], r["pct"],
+                                str(r[c_ctrl]).upper().startswith("S") if c_ctrl else False))
+            nota.append("Formulário de Referência (posição acionária, cadeia de controle informada pela SPE)")
+    if not arestas and len(fre):
+        f2 = fre[~fre.acionista.map(_n).str.contains(r"tesouraria|^outros$", regex=True) & (fre.participacao_pct.fillna(0) > 0)]
+        for _, r in f2.iterrows():
+            arestas.append((r.acionista, info["nome"], r.participacao_pct, str(r.controlador).upper().startswith("S")))
+        nota.append("Formulário de Referência (posição acionária; sem a ligação entre níveis, todos aparecem ligados à SPE — "
+                    "inclui acionistas dos controladores)")
+    if len(ac):
+        for _, r in ac.iterrows():
+            pct = pd.to_numeric(r.get("participacao_pct"), errors="coerce")
+            if not any(_n(a_[0]) == _n(r.acionista) for a_ in arestas):
+                arestas.append((r.acionista, info["nome"], pct, "control" in _n(r.get("papel", ""))))
+        nota.append("curadoria do cadastro (marcados 'validar' sem documento)")
+    if not arestas:
+        return "", ""
+    cor_g = COR_GRUPO.get(info["grupo"], "#1f77b4")
+    linhas = ['digraph G {', 'rankdir=TB; bgcolor="transparent"; nodesep=0.25; ranksep=0.45;',
+              'node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, color="#888888", '
+              'fillcolor="#F4F4F4", fontcolor="#222222"];', 'edge [color="#888888", fontname="Helvetica", fontsize=9, fontcolor="#555555"];',
+              f'"{_rot(info["nome"])}" [fillcolor="{cor_g}", fontcolor="white", penwidth=2, fontsize=12];']
+    vistos = set()
+    for orig, dest, pct, ctrl in arestas:
+        o, d_ = _rot(orig), _rot(dest)
+        if (o, d_) in vistos or o == d_:
+            continue
+        vistos.add((o, d_))
+        if ctrl:
+            linhas.append(f'"{o}" [color="{cor_g}", penwidth=2];')
+        lab = f'{pct:.1f}%'.replace(".", ",") if pd.notna(pct) else "?"
+        linhas.append(f'"{o}" -> "{d_}" [label="{lab}"{", penwidth=2" if ctrl else ""}];')
+    linhas.append(f'labelloc="t"; label="Grupo: {_rot(info["grupo"], 60)}"; fontname="Helvetica"; fontsize=11;')
+    linhas.append("}")
+    return "\n".join(linhas), ("Fonte: " + "; ".join(nota) + ". Setas = participação no capital total; borda grossa = "
+                               "controlador. Esquema montado aqui (cálculo próprio).")
+
+
 # ================================================================== tráfego (cálculo próprio)
 def metricas(cad: pd.DataFrame, traf: pd.DataFrame) -> pd.DataFrame:
     mens = traf.groupby(["id_concessao", "mes"], as_index=False)[["veic_eq", "veic_total", "veic_pesado"]].sum()
@@ -510,11 +602,12 @@ ROT = {"veic_eq": "Veículos equivalentes", "receita_aj": "Receita líquida ajus
        "capex_por_km": "Capex por km (R$ mm)", "capex_manut_por_km": "Capex manut. por km (R$ mm)",
        "tarifa_media": "Tarifa média por veíc. eq. (R$)", "ebitda_aj_por_km": "EBITDA aj. por km (R$ mm)",
        "pmr_dias": "PMR (dias)", "pmp_dias": "PMP (dias)", "ciclo_financeiro_dias": "Ciclo financeiro (dias)",
-       "pct_divida_cp": "% da dívida no curto prazo", "veic_eq_ltm": "Veíc. eq. LTM", "cresc_ltm": "Crescimento LTM",
+       "pct_divida_cp": "% da dívida no curto prazo", "fco_comp_pos_arrend": "FCO comparável pós-arrendamento (R$ mm)",
+       "conversao_fco": "Conversão: FCO comp. pós-arrend. ÷ EBITDA aj. pós-arrend.", "veic_eq_ltm": "Veíc. eq. LTM", "cresc_ltm": "Crescimento LTM",
        "cresc_ltm_mesmas_pracas": "Crescimento LTM (mesmas praças)", "cagr_3a": "CAGR 3 anos", "pct_pesados": "% pesados",
        "vdm_eq_por_km": "VDM eq. por km", "pior_queda_anual": "Pior queda anual", "pracas_novas_ltm": "Praças novas LTM"}
 PCT = {"margem_ebitda_aj", "custo_implicito", "pct_divida_cp", "cresc_ltm", "cresc_ltm_mesmas_pracas", "cagr_3a",
-       "pct_pesados", "pior_queda_anual", "margem_ebitda_aj_pos_arrend"}
+       "pct_pesados", "pior_queda_anual", "margem_ebitda_aj_pos_arrend", "conversao_fco"}
 
 
 # ================================================================== dados
@@ -607,12 +700,24 @@ with aba_mapa:
         pt["raio"] = 4000 + np.sqrt(pt.veic_eq_ltm.astype(float)) * 4
         pt["veic_eq_ltm_txt"] = pt.veic_eq_ltm.map(lambda v: f"{v:,.0f}".replace(",", "."))
         camadas = []
+        tracado = st.checkbox("Mostrar traçado das rodovias (aproximado, ligando as praças)", value=True, key="map_tracado")
         ufs_geo, ufs_rot = estados_geojson()
         if ufs_geo:
             camadas.append(pdk.Layer("GeoJsonLayer", ufs_geo, stroked=True, filled=True, get_fill_color=[128, 128, 128, 18],
                                      get_line_color=[160, 160, 160, 220], line_width_min_pixels=1, pickable=False))
             camadas.append(pdk.Layer("TextLayer", ufs_rot, get_position="[lon, lat]", get_text="sigla", get_size=12,
                                      get_color=[150, 150, 150, 230], pickable=False))
+        if tracado and not pr.empty:
+            caminhos = []
+            q = pr.assign(km=pd.to_numeric(pr["km_m"], errors="coerce")).dropna(subset=["km"])
+            for (_i, _rod, _uf), gq in q.groupby(["id_concessao", "rodovia", "uf"]):
+                gq = gq.drop_duplicates(["latitude", "longitude"]).sort_values("km")
+                if len(gq) >= 2:
+                    caminhos.append({"path": gq[["longitude", "latitude"]].astype(float).values.tolist(),
+                                     "cor": hex_rgb(COR_GRUPO.get(gq.grupo.iloc[0], "#B0B0B0"))})
+            if caminhos:
+                camadas.append(pdk.Layer("PathLayer", pd.DataFrame(caminhos), get_path="path", get_color="cor",
+                                         width_min_pixels=3, width_scale=1, get_width=4, opacity=0.85, pickable=False))
         st.pydeck_chart(pdk.Deck(
             map_style=None, initial_view_state=pdk.ViewState(latitude=-18, longitude=-50, zoom=3.6),
             layers=camadas + [pdk.Layer("ScatterplotLayer", pt, get_position="[longitude, latitude]", get_fill_color="cor",
@@ -621,7 +726,9 @@ with aba_mapa:
             tooltip={"text": "{nome} ({grupo})\n{local}\nVeíc. eq. LTM: {veic_eq_ltm_txt}"}))
         legenda({g: COR_GRUPO[g] for g in GRUPOS if g in set(pt.grupo)})
         sem_pos = sel[~sel.id.isin(set(com_praca)) & ~sel.id.isin(set(sem.id))]
-        st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. "
+        st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. Traçado: linha que liga as "
+                   "praças da mesma rodovia e UF na ordem do km (ANTT) — aproximação, não a geometria exata da via; trechos "
+                   "antes da 1ª e depois da última praça não aparecem. "
                    "Praças federais com coordenadas da ANTT; demais SPEs (SP, MG e federais sem praça georreferenciada) "
                    "num ponto aproximado do trecho, do cadastro. Tamanho = veículos equivalentes LTM."
                    + (f" Sem posição no mapa: {', '.join(sem_pos.nome)}." if len(sem_pos) else ""))
@@ -935,6 +1042,39 @@ with aba_op:
                              .sort_values("vencimento").round({c_: 2 for c_ in ("saldo_rs_mm", "prazo_anos", "taxa_contratada", "taxa_mercado", "spread_emissao", "spread_mercado", "nominal_emissao", "nominal_mercado")}), hide_index=True, width="stretch")
                 k2.caption(f"Fonte: {fonte_deb}. Vencimento final (sem a curva de amortização da escritura). Spreads em p.p. "
                            "sobre o soberano no prazo (CDI+: spread sobre o CDI).")
+                # comparação: esta SPE x demais SPEs do grupo x universo de concessionárias de rodovias
+                cd_all = custo_debentures(deb.drop_duplicates("codigo"), pj)
+                cd_all["grupo"] = cd_all["id"].map(cad.set_index("id").grupo)
+                cods = set(deb_o.codigo)
+                conjuntos = {"Esta SPE": cd_all[cd_all.codigo.isin(cods)],
+                             f"Demais SPEs do grupo {info['grupo']}": cd_all[(cd_all.grupo == info["grupo"]) & ~cd_all.codigo.isin(cods)],
+                             "Universo (concessionárias de rodovias)": cd_all}
+                tabs_c = []
+                for nome_c, dfc in conjuntos.items():
+                    if len(dfc):
+                        r_c = resumo_custo(dfc)
+                        r_c.insert(0, "Conjunto", nome_c)
+                        tabs_c.append(r_c)
+                if tabs_c:
+                    comp_d = pd.concat(tabs_c, ignore_index=True)
+                    st.markdown("**Remuneração da dívida: esta SPE vs. demais SPEs do grupo vs. universo** (debêntures, ponderado pelo saldo)")
+                    q1, q2 = st.columns([1, 1.6])
+                    med_d = q1.radio("Medida", ["Spread mercado s/ soberano (p.p.)", "Spread emissão s/ soberano (p.p.)",
+                                                "Custo nominal mercado (% a.a.)", "Custo nominal emissão (% a.a.)",
+                                                "Spread nominal mercado s/ pré (p.p.)", "Spread nominal emissão s/ pré (p.p.)"],
+                                     key="op_deb_med")
+                    g_d = comp_d[comp_d.Indexador != "Outros"].copy()
+                    g_d["Indexador"] = g_d.Indexador.str.replace(" (nominal equivalente)", "", regex=False)
+                    fig = px.bar(g_d, x="Indexador", y=med_d, color="Conjunto", barmode="group", text_auto=".2f",
+                                 color_discrete_sequence=["#1f77b4", COR_GRUPO.get(info["grupo"], "#9467bd"), "#7f7f7f"],
+                                 labels={"Indexador": "", med_d: ""})
+                    q2.plotly_chart(layout(fig, med_d, h=380), width="stretch")
+                    q1.caption("Spreads por indexador: CDI+ = spread sobre o CDI; IPCA+ e prefixada = taxa − ETTJ ANBIMA no "
+                               "mesmo prazo. 'Total' usa o custo nominal equivalente (todas as classes na curva de hoje). "
+                               f"Universo = todas as debêntures de SPEs com CNPJ na base ({cd_all.codigo.nunique()} papéis). "
+                               "Cálculo próprio.")
+                    with st.expander("Tabela da comparação"):
+                        st.dataframe(comp_d.round(2), hide_index=True, width="stretch")
 
             # capex
             st.markdown("**Capex e capex de manutenção**")
@@ -946,25 +1086,48 @@ with aba_op:
                        "pagamento/utilização da provisão de manutenção na DFC."
                        + (f" **Aproximado** (pagamento não identificado na DFC; saldo inicial + ajuste da DFC − saldo final) em: "
                           f"{', '.join(aprox)}." if aprox else ""))
-            # benchmark capex por VEQ e por km — último período com dado
-            ult_b = d.dropna(subset=["capex"]).tail(1)
-            if len(ult_b):
-                ref = ult_b.iloc[0]
-                pares = fin[(fin.tipo == ref.tipo) & (fin.dt_fim.dt.year == ref.dt_fim.year) & (fin.dt_fim.dt.month == ref.dt_fim.month)]
-                metr_b = k2.selectbox("Indicador de capex", ["capex_por_veq", "capex_manut_por_veq", "capex_por_km", "capex_manut_por_km"],
-                                      format_func=lambda k: ROT[k], key="op_bench")
-                cmpb = pd.DataFrame({"Comparação": ["Esta SPE", "Mediana — todas", f"Mediana — grupo {info['grupo']}",
-                                                    f"Mediana — região {REGIOES.get(info['regiao'], '')}"],
-                                     "valor": [ref[metr_b], pares[metr_b].median(),
-                                               pares[pares.grupo == info["grupo"]][metr_b].median(),
-                                               pares[pares.regiao == info["regiao"]][metr_b].median()],
-                                     "n": [1, pares[metr_b].notna().sum(), pares[(pares.grupo == info["grupo"])][metr_b].notna().sum(),
-                                           pares[(pares.regiao == info["regiao"])][metr_b].notna().sum()]})
-                fig = px.bar(cmpb, x="Comparação", y="valor", text="n", labels={"valor": "", "Comparação": ""})
-                fig.update_traces(texttemplate="n=%{text}", textposition="outside")
-                k2.plotly_chart(layout(fig, f"{ROT[metr_b]} — {ref.x}"), width="stretch")
-                k2.caption("Medianas das SPEs com dado no mesmo período (n = SPEs). Por veículo equivalente usa o tráfego "
-                           "do mesmo período; por km, a extensão do cadastro. Cálculo próprio.")
+            # benchmark capex por VEQ e por km — todos os períodos
+            metr_b = k2.selectbox("Indicador de capex", ["capex_por_veq", "capex_manut_por_veq", "capex_por_km", "capex_manut_por_km"],
+                                  format_func=lambda k: ROT[k], key="op_bench")
+            base_b = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op)]
+
+            def _med(m_):
+                return base_b[m_].groupby("dt_fim")[metr_b].median()
+            series_b = [(f"Mediana — demais SPEs", _med(base_b.id.notna()), "#7f7f7f"),
+                        (f"Mediana — grupo {info['grupo']}", _med(base_b.grupo == info["grupo"]), COR_GRUPO.get(info["grupo"], "#9467bd")),
+                        (f"Mediana — região {REGIOES.get(info['regiao'], '')}", _med(base_b.regiao == info["regiao"]), "#2ca02c")]
+            fig = go.Figure([go.Bar(x=d.x, y=d[metr_b], name="Esta SPE", marker_color="#1f77b4", opacity=0.85)])
+            for nome_b, s_b, cor_b in series_b:
+                fig.add_trace(go.Scatter(x=d.x, y=d.dt_fim.map(s_b), name=nome_b, mode="lines+markers",
+                                         line=dict(color=cor_b, dash="dash", width=2)))
+            k2.plotly_chart(layout(fig, f"{ROT[metr_b]} — SPE vs. medianas", h=380, x=True), width="stretch")
+            n_ult = base_b[base_b.dt_fim == d.dt_fim.max()][metr_b].notna().sum()
+            k2.caption(f"Medianas das demais SPEs com dado em cada período (no último, {n_ult} SPEs no total). Por veículo "
+                       "equivalente usa o tráfego do mesmo período; por km, a extensão do cadastro. Cálculo próprio.")
+
+            # conversão do EBITDA ajustado em FCO
+            st.markdown("**Conversão do EBITDA ajustado em caixa (FCO)**")
+            k1, k2 = st.columns(2)
+            fig = go.Figure([go.Bar(x=d.x, y=d.ebitda_aj, name="EBITDA ajustado", opacity=0.5),
+                             go.Bar(x=d.x, y=d.ebitda_aj_pos_arrend, name="EBITDA aj. pós-arrendamento", opacity=0.75),
+                             go.Bar(x=d.x, y=d.fco_comp_pos_arrend, name="FCO comparável pós-arrendamento", opacity=0.95)])
+            k1.plotly_chart(layout(fig, "EBITDA ajustado e FCO (R$ mm)", h=380, x=True), width="stretch")
+            med_cv = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op)].groupby("dt_fim").conversao_fco.median()
+            med_gr = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op) & (fin.grupo == info["grupo"])].groupby("dt_fim").conversao_fco.median()
+            fig = go.Figure([go.Scatter(x=d.x, y=d.conversao_fco, name="Esta SPE", mode="lines+markers", line=dict(width=3)),
+                             go.Scatter(x=d.x, y=d.dt_fim.map(med_cv), name="Mediana — demais SPEs", mode="lines",
+                                        line=dict(color="#7f7f7f", dash="dash")),
+                             go.Scatter(x=d.x, y=d.dt_fim.map(med_gr), name=f"Mediana — grupo {info['grupo']}", mode="lines",
+                                        line=dict(color=COR_GRUPO.get(info["grupo"], "#9467bd"), dash="dot"))])
+            fig.add_hline(y=1, line_dash="dot", line_color="gray")
+            k2.plotly_chart(layout(fig, "Conversão: FCO comp. pós-arrend. ÷ EBITDA aj. pós-arrend.", h=380, pct=True, x=True),
+                            width="stretch")
+            st.caption("Mesma lógica do Price Discovery Scanning, partindo do EBITDA ajustado de rodovia. FCO comparável = FCO "
+                       "reportado sem juros e dividendos pagos/recebidos que a empresa classifica no operacional; aqui também "
+                       "sem os pagamentos de arrendamento (principal + juros), para ficar na mesma base do EBITDA ajustado "
+                       "pós-arrendamento. Abaixo de 100%: parte do EBITDA ficou em capital de giro, IR/CS pagos e no pagamento "
+                       "da provisão de manutenção (que está no FCO, mas foi somada de volta ao EBITDA ajustado). Vazio com "
+                       "EBITDA ≤ 0. Cálculo próprio.")
 
             # ICSD e alavancagem
             st.markdown("**ICSD e alavancagem**")
@@ -973,7 +1136,7 @@ with aba_op:
                              go.Scatter(x=d.x, y=d.icsd_sem_manut, mode="lines+markers", name="ICSD (sem pagamento da provisão)",
                                         line=dict(dash="dash"))])
             for nivel, corl in ((1.0, "#C0504D"), (1.2, "#E69F00"), (1.3, "#2E6FBA")):
-                fig.add_hline(y=nivel, line_dash="dot", line_color=corl, annotation_text=f"{nivel:.1f}x", annotation_position="right")
+                fig.add_hline(y=nivel, line_dash="dot", line_color=corl, annotation_text=f"ICSD {nivel:.1f}x".replace(".", ","), annotation_position="top left", annotation_font_size=11)
             k1.plotly_chart(layout(fig, "ICSD (x)", x=True), width="stretch")
             fig = go.Figure([go.Scatter(x=d.x, y=d.dl_ebitda_aj_ifrs16, mode="lines+markers", name="DL c/ arrend. ÷ EBITDA aj. (IFRS 16)"),
                              go.Scatter(x=d.x, y=d.dl_ebitda_aj_pre_ifrs16, mode="lines+markers", name="DL s/ arrend. ÷ EBITDA aj. pós-arrend. (pré-IFRS 16)")])
@@ -1000,36 +1163,72 @@ with aba_op:
                 st.caption("IR fixo é conservador (com menos receita o IR cairia). Variação negativa = queda de tráfego que a "
                            "SPE suporta até o ICSD alvo; positiva = já está abaixo do alvo.")
 
-            # estrutura societária e peso no grupo
-            st.markdown("**Estrutura societária e peso no grupo**")
-            k1, k2 = st.columns([1.2, 1])
+            # estrutura societária (esquema) e peso no grupo
+            st.markdown("**Estrutura societária — quem investe em quem**")
             ac = ler_acionistas_curadoria()
             ac = ac[ac.id == op] if not ac.empty else ac
             fre = ler_fin("acionistas_fre")
             if not fre.empty:
                 fre = fre.assign(id=fre["ids"].astype(str).str.split("|")).explode("id")
                 fre = fre[fre.id == op]
-            if len(ac):
-                k1.markdown("Curadoria (cadastro):")
-                k1.dataframe(ac.drop(columns="id"), hide_index=True, width="stretch")
-            if len(fre):
-                k1.markdown("Formulário de Referência (posição acionária):")
-                k1.dataframe(fre[["acionista", "participacao_pct", "controlador", "data_referencia"]], hide_index=True, width="stretch")
-            if not len(ac) and not len(fre):
-                k1.caption("Sem estrutura societária na base (FRE não entregue/coletado e sem curadoria).")
+            bruto_fre = ler_fin("acionistas_fre_bruto")
+            e1, e2 = st.columns(2)
+            niv_e = e1.slider("Níveis acima da SPE", 1, 6, 3, key="op_niveis")
+            pmin_e = e2.slider("Participação mínima exibida (%)", 0.0, 50.0, 5.0, 0.5, key="op_pmin",
+                               help="Vale do 2º nível para cima; os acionistas diretos da SPE aparecem sempre.")
+            dot, nota_dot = esquema_societario(op, info, ac, fre, bruto_fre, niv_e, pmin_e)
+            if dot:
+                st.graphviz_chart(dot, width="stretch")
+                st.caption(nota_dot)
+            else:
+                st.caption("Sem estrutura societária na base (FRE não entregue/coletado e sem curadoria).")
+            if len(ac) or len(fre):
+                with st.expander("Tabelas de origem (curadoria e Formulário de Referência)"):
+                    if len(ac):
+                        st.dataframe(ac.drop(columns="id"), hide_index=True, width="stretch")
+                    if len(fre):
+                        st.dataframe(fre[["acionista", "participacao_pct", "controlador", "data_referencia"]], hide_index=True,
+                                     width="stretch")
+
             ua = fo[fo.tipo == "anual"]
-            if len(ua):
+            if len(ua) and info["grupo"] != SEM_GRUPO:
+                st.markdown(f"**Peso da SPE no grupo {info['grupo']}**")
+                vars_g = ["receita_aj", "ebitda_aj", "capex", "capex_manut", "divida_bruta", "veic_eq"]
+                ga = fin[(fin.tipo == "anual") & (fin.grupo == info["grupo"])]
                 ex = int(ua.exercicio.max())
-                gr = fin[(fin.tipo == "anual") & (fin.exercicio == ex) & (fin.grupo == info["grupo"])]
-                tot = gr[["receita_aj", "ebitda_aj", "capex", "capex_manut", "divida_bruta", "veic_eq"]].sum(min_count=1)
-                eu = ua[ua.exercicio == ex][["receita_aj", "ebitda_aj", "capex", "capex_manut", "divida_bruta", "veic_eq"]].iloc[0]
-                pesos = pd.DataFrame({"Variável": [ROT[k] for k in tot.index], "SPE": eu.values, "Grupo": tot.values,
-                                      "% do grupo": (eu / tot).values})
-                k2.markdown(f"Peso no grupo {info['grupo']} — exercício {ex} ({gr.id.nunique()} SPEs do grupo com DFP)")
-                k2.dataframe(pesos, hide_index=True, width="stretch",
-                             column_config={"% do grupo": st.column_config.NumberColumn(format="percent"),
-                                            "SPE": st.column_config.NumberColumn(format="%.1f"),
-                                            "Grupo": st.column_config.NumberColumn(format="%.1f")})
+                gr = ga[ga.exercicio == ex]
+                k1, k2 = st.columns(2)
+                tot = gr[vars_g].sum(min_count=1)
+                eu = ua[ua.exercicio == ex][vars_g].iloc[0]
+                pesos = pd.DataFrame({"Variável": [ROT[k_].split(" (")[0] for k_ in vars_g], "pct": (eu / tot).values,
+                                      "SPE": eu.values, "Grupo": tot.values})
+                fig = px.bar(pesos, x="pct", y="Variável", orientation="h", text_auto=".0%",
+                             color_discrete_sequence=[COR_GRUPO.get(info["grupo"], "#1f77b4")],
+                             hover_data={"SPE": ":.1f", "Grupo": ":.1f", "pct": ":.1%"}, labels={"pct": "", "Variável": ""})
+                fig.update_xaxes(tickformat=".0%", range=[0, 1])
+                k1.plotly_chart(layout(fig, f"% do grupo — exercício {ex} ({gr.id.nunique()} SPEs do grupo com DFP)", h=360),
+                                width="stretch")
+                comp_g = gr.melt(id_vars=["nome"], value_vars=vars_g, var_name="var", value_name="valor").dropna()
+                comp_g["Variável"] = comp_g["var"].map(lambda k_: ROT[k_].split(" (")[0])
+                cores_spe = {n_: ("#d62728" if n_ == info["nome"] else c_) for n_, c_ in
+                             zip(sorted(gr.nome.unique()), px.colors.qualitative.Pastel * 5)}
+                fig = px.bar(comp_g, x="valor", y="Variável", color="nome", orientation="h", color_discrete_map=cores_spe,
+                             labels={"valor": "", "Variável": "", "nome": "SPE"})
+                fig.update_layout(barnorm="percent", barmode="stack")
+                fig.update_xaxes(ticksuffix="%")
+                k2.plotly_chart(layout(fig, f"Composição do grupo por SPE — {ex} (em vermelho: {info['nome']})", h=360),
+                                width="stretch")
+                var_t = st.selectbox("Peso no grupo ao longo do tempo", vars_g, format_func=lambda k_: ROT[k_], key="op_peso_t")
+                tg = ga.groupby("exercicio")[var_t].sum(min_count=1)
+                ts = ua.set_index("exercicio")[var_t]
+                serie_p = (ts / tg.reindex(ts.index)).dropna()
+                fig = go.Figure([go.Bar(x=serie_p.index.astype(str), y=serie_p.values, marker_color=COR_GRUPO.get(info["grupo"], "#1f77b4"),
+                                        text=[f"{v:.0%}" for v in serie_p.values], textposition="outside")])
+                fig.update_yaxes(tickformat=".0%")
+                st.plotly_chart(layout(fig, f"{ROT[var_t]}: participação da SPE no grupo por exercício", h=320, x=True),
+                                width="stretch")
+                st.caption("Grupo = soma das SPEs do grupo com DFP no exercício (o número de SPEs muda ao longo do tempo com "
+                           "entradas e saídas de concessões). Não é o consolidado da holding. Cálculo próprio.")
             with st.expander("Tabela financeira completa"):
                 cols_f = ["x", "fonte", "receita_aj", "receita_construcao", "ebitda", "prov_manut_constituicao", "ebitda_aj",
                           "pagamento_arrendamento", "ebitda_aj_pos_arrend", "ir_csll_pagos", "capex", "capex_manut",
@@ -1073,7 +1272,8 @@ with aba_comp:
     num_f = ["receita_aj", "ebitda_aj", "margem_ebitda_aj", "ebitda_aj_pos_arrend", "capex", "capex_manut", "icsd",
              "icsd_sem_manut", "dl_ebitda_aj_ifrs16", "dl_ebitda_aj_pre_ifrs16", "divida_bruta", "divida_liquida",
              "custo_implicito", "tarifa_media", "capex_por_veq", "capex_manut_por_veq", "capex_por_km", "capex_manut_por_km",
-             "ebitda_aj_por_km", "pmr_dias", "pmp_dias", "ciclo_financeiro_dias", "pct_divida_cp"]
+             "ebitda_aj_por_km", "pmr_dias", "pmp_dias", "ciclo_financeiro_dias", "pct_divida_cp", "fco_comp_pos_arrend",
+             "conversao_fco"]
     if not fin.empty:
         tp = "ltm" if per_c == "Último LTM" else "anual"
         uf_ = fin[fin.tipo == tp].sort_values("dt_fim").groupby("id").tail(1).set_index("id")
