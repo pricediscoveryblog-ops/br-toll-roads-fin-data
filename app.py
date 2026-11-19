@@ -936,7 +936,10 @@ with aba_op:
         m = t.groupby("mes", as_index=False)[["veic_eq", "veic_total", "veic_pesado"]].sum().sort_values("mes")
         m["ltm"] = m.veic_eq.rolling(12).sum()
         q1, q2, q3 = st.columns([1.2, 1.5, 1.3])
-        freq = q1.radio("Frequência do volume", ["Mensal", "Anual (anos completos)"], horizontal=True, key="op_freq")
+        freq = q1.radio("Frequência do volume", ["Mensal", "Trimestral", "Últimos 12 meses (LTM)", "Anual (anos completos)"],
+                        horizontal=True, key="op_freq",
+                        help="Trimestral = soma dos 3 meses de cada trimestre (só trimestres completos), sem acumular. "
+                             "LTM = soma móvel dos últimos 12 meses, um ponto por mês (tira a sazonalidade).")
         modo_c = q2.radio("Crescimento", ["a/a (LTM vs LTM anterior)", "Base zero (acumulado desde o início)"],
                           horizontal=True, key="op_cresc")
         cmp_pib = q3.checkbox("Comparar com o PIB real", key="op_pib")
@@ -944,6 +947,20 @@ with aba_op:
             fig = go.Figure([go.Bar(x=m.mes, y=m.veic_eq, name="Veíc. equivalentes"),
                              go.Bar(x=m.mes, y=m.veic_total, name="Veíc. físicos", opacity=0.5)])
             fig.update_layout(barmode="group")
+        elif freq == "Trimestral":
+            tq = m.assign(tri=m.mes.dt.to_period("Q")).groupby("tri").agg(
+                veic_eq=("veic_eq", "sum"), veic_total=("veic_total", "sum"), n=("mes", "count"))
+            tq = tq[tq.n == 3].reset_index()
+            tq["rot"] = [f"{p.quarter}T{str(p.year)[2:]}" for p in tq.tri]
+            fig = go.Figure([go.Bar(x=tq.rot, y=tq.veic_eq, name="Veíc. equivalentes"),
+                             go.Bar(x=tq.rot, y=tq.veic_total, name="Veíc. físicos", opacity=0.5)])
+            fig.update_layout(barmode="group")
+            fig.update_xaxes(type="category", categoryorder="array", categoryarray=tq.rot.tolist())
+        elif freq.startswith("Últimos 12"):
+            lt_ = m.assign(ltm_total=m.veic_total.rolling(12).sum()).dropna(subset=["ltm"])
+            fig = go.Figure([go.Scatter(x=lt_.mes, y=lt_.ltm, mode="lines", name="Veíc. equivalentes (LTM)", line=dict(width=3)),
+                             go.Scatter(x=lt_.mes, y=lt_.ltm_total, mode="lines", name="Veíc. físicos (LTM)",
+                                        line=dict(width=2, dash="dot"))])
         else:
             a = m.assign(ano=m.mes.dt.year).groupby("ano").agg(veic_eq=("veic_eq", "sum"), veic_total=("veic_total", "sum"),
                                                                 n=("mes", "count"))
