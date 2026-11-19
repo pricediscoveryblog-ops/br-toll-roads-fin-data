@@ -914,38 +914,55 @@ with aba_op:
                              go.Bar(x=a.ano.astype(str), y=a.veic_total, name="Veíc. físicos", opacity=0.5)])
             fig.update_layout(barmode="group")
         st.plotly_chart(layout(fig, f"Volume de tráfego (fonte: {fonte})"), width="stretch")
-        # crescimento: LTM para tirar a sazonalidade
-        g = m.dropna(subset=["ltm"]).copy()
-        ini_slider = None
+        # crescimento: LTM para tirar a sazonalidade; janela escolhida na barra "Prazo analisado"
+        g = m.dropna(subset=["ltm"]).reset_index(drop=True)
         if len(g) > 1:
-            if modo_c.startswith("a/a"):
-                g["cresc"] = g.ltm.pct_change(12)
-            else:
-                ini_slider = st.select_slider("Início da base zero", options=list(g.mes.dt.strftime("%m/%Y")),
-                                              value=g.mes.dt.strftime("%m/%Y").iloc[max(0, len(g) - 61)], key="op_base0")
-                g = g[g.mes >= pd.to_datetime(ini_slider, format="%m/%Y")]
-                g["cresc"] = g.ltm / g.ltm.iloc[0] - 1
-            fig = go.Figure([go.Scatter(x=g.mes, y=g.cresc, mode="lines", name="Veíc. eq. (LTM)", line=dict(width=3))])
+            g["rot"] = g.mes.dt.strftime("%m/%Y")
+            xs_t = list(g.rot)
+            p0, p1 = st.select_slider("Prazo analisado", options=xs_t, value=(xs_t[max(0, len(xs_t) - 61)], xs_t[-1]),
+                                      key=f"op_traf_prazo_{op}")
+            i0, i1 = xs_t.index(p0), xs_t.index(p1)
+            g["cresc"] = g.ltm.pct_change(12)          # a/a na série inteira, depois recortado
+            gj = g.iloc[i0:i1 + 1].copy()
+            if not modo_c.startswith("a/a"):
+                gj["cresc"] = gj.ltm / gj.ltm.iloc[0] - 1
+            anos_t = max((gj.mes.iloc[-1] - gj.mes.iloc[0]).days / 365.25, 1e-9)
+            resumo_t = []
+            if i1 > i0 and gj.ltm.iloc[0] > 0:
+                r_ = gj.ltm.iloc[-1] / gj.ltm.iloc[0]
+                resumo_t.append({"Série": "Veíc. eq. (LTM)", "Acumulado": r_ - 1, "Ao ano (CAGR)": r_ ** (1 / anos_t) - 1})
+            fig = go.Figure([go.Scatter(x=gj.mes, y=gj.cresc, mode="lines", name="Veíc. eq. (LTM)", line=dict(width=3))])
             if cmp_pib:
                 pv = pd.read_csv(pasta_m / "pib_volume_trimestral.csv") if (pasta_m / "pib_volume_trimestral.csv").exists() else pd.DataFrame()
                 if len(pv):
                     pv["data"] = [pd.Timestamp(a, 3 * q, 1) for a, q in zip(pv.ano, pv.tri)]
                     pv["acum4"] = pv.indice_volume.rolling(4).sum()
                     pv = pv.dropna(subset=["acum4"])
-                    if modo_c.startswith("a/a"):
-                        pv["cresc"] = pv.acum4.pct_change(4)
-                    else:
-                        pv = pv[pv.data >= g.mes.min() - pd.DateOffset(months=2)]
-                        pv["cresc"] = pv.acum4 / pv.acum4.iloc[0] - 1 if len(pv) else np.nan
-                    pv = pv[pv.data >= g.mes.min() - pd.DateOffset(months=2)]
-                    fig.add_trace(go.Scatter(x=pv.data, y=pv.cresc, mode="lines+markers", name="PIB real (4 tri acum.)",
-                                             line=dict(color="#2CA02C", dash="dot", width=2.5)))
+                    pv["cresc"] = pv.acum4.pct_change(4)
+                    pv = pv[(pv.data >= gj.mes.min() - pd.DateOffset(months=2)) & (pv.data <= gj.mes.max())].copy()
+                    if len(pv):
+                        if not modo_c.startswith("a/a"):
+                            pv["cresc"] = pv.acum4 / pv.acum4.iloc[0] - 1
+                        fig.add_trace(go.Scatter(x=pv.data, y=pv.cresc, mode="lines+markers", name="PIB real (4 tri acum.)",
+                                                 line=dict(color="#2CA02C", dash="dot", width=2.5)))
+                        if len(pv) > 1 and pv.acum4.iloc[0] > 0:
+                            r_ = pv.acum4.iloc[-1] / pv.acum4.iloc[0]
+                            anos_p = max((pv.data.iloc[-1] - pv.data.iloc[0]).days / 365.25, 1e-9)
+                            resumo_t.append({"Série": f"PIB real ({pv.data.iloc[0]:%m/%Y} → {pv.data.iloc[-1]:%m/%Y})",
+                                             "Acumulado": r_ - 1, "Ao ano (CAGR)": r_ ** (1 / anos_p) - 1})
             fig.add_hline(y=0, line_dash="dot", line_color="gray")
-            st.plotly_chart(layout(fig, "Crescimento do tráfego — " + ("a/a, 12 meses acumulados" if modo_c.startswith("a/a")
-                                                                      else "acumulado desde a base"), pct=True), width="stretch")
-            st.caption("Tráfego em 12 meses acumulados (neutraliza a sazonalidade). PIB real: IBGE (SIDRA 1620, índice de "
-                       "volume), soma de 4 trimestres, mesmo recorte. Entrada de praças novas infla o crescimento — ver "
-                       "'mesmas praças' na aba Comparar SPEs.")
+            c_t1, c_t2 = st.columns([1, 2.4])
+            c_t2.plotly_chart(layout(fig, f"Crescimento do tráfego {p0} → {p1} — " + ("a/a, 12 meses acumulados" if modo_c.startswith("a/a")
+                                                                                   else "acumulado desde o início do prazo"), pct=True), width="stretch")
+            if resumo_t:
+                c_t1.markdown(f"**{p0} → {p1}** ({anos_t:.1f} anos)")
+                c_t1.dataframe(pd.DataFrame(resumo_t), hide_index=True, width="stretch",
+                               column_config={"Acumulado": st.column_config.NumberColumn(format="percent"),
+                                              "Ao ano (CAGR)": st.column_config.NumberColumn(format="percent")})
+            st.caption("Escolha início e fim na barra 'Prazo analisado'. Tráfego em 12 meses acumulados (neutraliza a "
+                       "sazonalidade). PIB real: IBGE (SIDRA 1620, índice de volume), soma de 4 trimestres, no trimestre mais "
+                       "próximo do mesmo recorte. Acumulado e CAGR comparam o fim com o início (cálculo próprio). Entrada de "
+                       "praças novas infla o crescimento — ver 'mesmas praças' na aba Comparar SPEs.")
         ult = m.mes.max()
         pp = t[t.mes > ult - pd.DateOffset(months=12)].groupby("praca", as_index=False)[["veic_eq", "veic_total", "veic_pesado"]].sum()
         pp["pct_pesados"] = pp.veic_pesado / pp.veic_total
