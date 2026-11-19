@@ -1118,6 +1118,30 @@ with aba_op:
                        "do período; PIB nominal = volume (IBGE) × nível médio de preços (IPCA). R\\$/US\\$ positivo = real se "
                        "desvalorizou. Fonte macro: IBGE e BCB via Price Discovery Scanning.")
 
+            # conversão do EBITDA ajustado em FCO
+            st.markdown("**Conversão do EBITDA ajustado em caixa (FCO)**")
+            k1, k2 = st.columns(2)
+            fig = go.Figure([go.Bar(x=d.x, y=d.ebitda_aj, name="EBITDA ajustado", opacity=0.5),
+                             go.Bar(x=d.x, y=d.ebitda_aj_pos_arrend, name="EBITDA aj. pós-arrendamento", opacity=0.75),
+                             go.Bar(x=d.x, y=d.fco_comp_pos_arrend, name="FCO comparável pós-arrendamento", opacity=0.95)])
+            k1.plotly_chart(layout(fig, "EBITDA ajustado e FCO (R$ mm)", h=380, x=True), width="stretch")
+            med_cv = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op)].groupby("dt_fim").conversao_fco.median()
+            med_gr = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op) & (fin.grupo == info["grupo"])].groupby("dt_fim").conversao_fco.median()
+            fig = go.Figure([go.Scatter(x=d.x, y=d.conversao_fco, name="Esta SPE", mode="lines+markers", line=dict(width=3)),
+                             go.Scatter(x=d.x, y=d.dt_fim.map(med_cv), name="Mediana — demais SPEs", mode="lines",
+                                        line=dict(color="#7f7f7f", dash="dash")),
+                             go.Scatter(x=d.x, y=d.dt_fim.map(med_gr), name=f"Mediana — grupo {info['grupo']}", mode="lines",
+                                        line=dict(color=COR_GRUPO.get(info["grupo"], "#9467bd"), dash="dot"))])
+            fig.add_hline(y=1, line_dash="dot", line_color="gray")
+            k2.plotly_chart(layout(fig, "Conversão: FCO comp. pós-arrend. ÷ EBITDA aj. pós-arrend.", h=380, pct=True, x=True),
+                            width="stretch")
+            st.caption("Mesma lógica do Price Discovery Scanning, partindo do EBITDA ajustado de rodovia. FCO comparável = FCO "
+                       "reportado sem juros e dividendos pagos/recebidos que a empresa classifica no operacional; aqui também "
+                       "sem os pagamentos de arrendamento (principal + juros), para ficar na mesma base do EBITDA ajustado "
+                       "pós-arrendamento. Abaixo de 100%: parte do EBITDA ficou em capital de giro, IR/CS pagos e no pagamento "
+                       "da provisão de manutenção (que está no FCO, mas foi somada de volta ao EBITDA ajustado). Vazio com "
+                       "EBITDA ≤ 0. Cálculo próprio.")
+
             # prazos, ciclo e perfil da dívida
             st.markdown("**Prazos, ciclo financeiro e perfil de vencimentos**")
             k1, k2 = st.columns(2)
@@ -1212,30 +1236,6 @@ with aba_op:
             n_ult = base_b[base_b.dt_fim == d.dt_fim.max()][metr_b].notna().sum()
             k2.caption(f"Medianas das demais SPEs com dado em cada período (no último, {n_ult} SPEs no total). Por veículo "
                        "equivalente usa o tráfego do mesmo período; por km, a extensão do cadastro. Cálculo próprio.")
-
-            # conversão do EBITDA ajustado em FCO
-            st.markdown("**Conversão do EBITDA ajustado em caixa (FCO)**")
-            k1, k2 = st.columns(2)
-            fig = go.Figure([go.Bar(x=d.x, y=d.ebitda_aj, name="EBITDA ajustado", opacity=0.5),
-                             go.Bar(x=d.x, y=d.ebitda_aj_pos_arrend, name="EBITDA aj. pós-arrendamento", opacity=0.75),
-                             go.Bar(x=d.x, y=d.fco_comp_pos_arrend, name="FCO comparável pós-arrendamento", opacity=0.95)])
-            k1.plotly_chart(layout(fig, "EBITDA ajustado e FCO (R$ mm)", h=380, x=True), width="stretch")
-            med_cv = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op)].groupby("dt_fim").conversao_fco.median()
-            med_gr = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op) & (fin.grupo == info["grupo"])].groupby("dt_fim").conversao_fco.median()
-            fig = go.Figure([go.Scatter(x=d.x, y=d.conversao_fco, name="Esta SPE", mode="lines+markers", line=dict(width=3)),
-                             go.Scatter(x=d.x, y=d.dt_fim.map(med_cv), name="Mediana — demais SPEs", mode="lines",
-                                        line=dict(color="#7f7f7f", dash="dash")),
-                             go.Scatter(x=d.x, y=d.dt_fim.map(med_gr), name=f"Mediana — grupo {info['grupo']}", mode="lines",
-                                        line=dict(color=COR_GRUPO.get(info["grupo"], "#9467bd"), dash="dot"))])
-            fig.add_hline(y=1, line_dash="dot", line_color="gray")
-            k2.plotly_chart(layout(fig, "Conversão: FCO comp. pós-arrend. ÷ EBITDA aj. pós-arrend.", h=380, pct=True, x=True),
-                            width="stretch")
-            st.caption("Mesma lógica do Price Discovery Scanning, partindo do EBITDA ajustado de rodovia. FCO comparável = FCO "
-                       "reportado sem juros e dividendos pagos/recebidos que a empresa classifica no operacional; aqui também "
-                       "sem os pagamentos de arrendamento (principal + juros), para ficar na mesma base do EBITDA ajustado "
-                       "pós-arrendamento. Abaixo de 100%: parte do EBITDA ficou em capital de giro, IR/CS pagos e no pagamento "
-                       "da provisão de manutenção (que está no FCO, mas foi somada de volta ao EBITDA ajustado). Vazio com "
-                       "EBITDA ≤ 0. Cálculo próprio.")
 
             # ICSD e alavancagem
             st.markdown("**ICSD e alavancagem**")
