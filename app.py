@@ -694,16 +694,6 @@ def fin_filtrado(ids, tipo="anual") -> pd.DataFrame:
     return fin[fin["id"].isin(ids) & (fin["tipo"] == tipo)]
 
 
-def consolidado(f: pd.DataFrame, cor: str, col: str, titulo: str, fmt=None):
-    if f.empty or f[col].notna().sum() == 0:
-        st.caption(f"{titulo}: sem dados.")
-        return
-    g = f.groupby(["periodo_x", cor], as_index=False)[col].sum(min_count=1)
-    cores = COR_GRUPO if cor == "grupo" else None
-    fig = px.bar(g, x="periodo_x", y=col, color=cor, color_discrete_map=cores, labels={"periodo_x": "", col: "", cor: ""})
-    st.plotly_chart(layout(fig, titulo, x=True), width="stretch")
-
-
 # ================================================================== visão geral e mapa
 with aba_mapa:
     c = st.columns(4)
@@ -773,69 +763,131 @@ with aba_mapa:
     st.subheader("Consolidado das SPEs no filtro")
     por_spe = len(f_gr) >= 1
     cor = "nome" if por_spe else "grupo"
+    base_per = st.radio("Período", ["Anos fechados", "Anos fechados + últimos 12 meses (LTM)"], index=1, horizontal=True,
+                        key="map_periodo",
+                        help="LTM = últimos 12 meses até o último ITR (soma dos 4 trimestres mais recentes, montada a partir "
+                             "das DFP/ITR da CVM); para o tráfego, os 12 meses até o último mês publicado. Fica como a "
+                             "última barra, depois dos anos fechados. Saldos (dívida) = posição na data de fim do período.")
+    com_ltm = base_per.endswith("(LTM)")
     st.caption("Empilhado por " + ("SPE (grupo selecionado no filtro)" if por_spe else "grupo controlador")
-               + ". Anual (exercício). Fontes: tráfego ANTT/ARTESP; financeiro CVM (DFP) das SPEs com registro. "
+               + ". Fontes: tráfego ANTT/ARTESP; financeiro CVM (DFP e, no LTM, ITR) das SPEs com registro. "
                  "Somas de SPEs, não o consolidado contábil da holding (sem eliminações nem dívida da holding).")
+
+    # financeiro: anos fechados (ano da data de fim do exercício) + LTM opcional
     ft = fin_filtrado(sel.id, "anual").copy()
+    rot_ltm_fin, ltm_atras = None, []
     if not ft.empty:
-        ft = ft[ft.exercicio >= ft.exercicio.max() - 9]
-    # tráfego anual (anos completos)
-    ta = traf[traf.id_concessao.isin(sel.id)].copy()
-    ta["ano"] = ta.mes.dt.year
-    cont = ta.groupby(["id_concessao", "ano"]).mes.nunique()
-    ta = ta.groupby(["id_concessao", "ano"], as_index=False).veic_eq.sum()
+        ft["ano"] = ft.dt_fim.dt.year
+        ft = ft.sort_values("dt_fim").drop_duplicates(["id", "ano"], keep="last")
+        ft = ft[ft.ano >= ft.ano.max() - 9]
+        ft["periodo_x"], ft["ordem"] = ft.ano.astype(str), ft.ano.astype(float)
+        if com_ltm:
+            fl = fin_filtrado(sel.id, "ltm").copy()
+            if not fl.empty and fl.dt_fim.max() > ft.dt_fim.max():
+                dt_ltm = fl.dt_fim.max()
+                fl = fl.sort_values("dt_fim").groupby("id").tail(1)
+                fl = fl[fl.dt_fim > dt_ltm - pd.DateOffset(months=12)]
+                ltm_atras = [f"{n} ({d:%m/%Y})" for n, d in zip(fl.nome, fl.dt_fim) if d < dt_ltm]
+                rot_ltm_fin = f"LTM {dt_ltm:%m/%Y}"
+                fl["ano"], fl["periodo_x"], fl["ordem"] = np.nan, rot_ltm_fin, 9999.0
+                ft = pd.concat([ft, fl], ignore_index=True)
+    # tráfego: anos completos (12 meses) + LTM opcional
+    tr = traf[traf.id_concessao.isin(sel.id)].copy()
+    tr["ano"] = tr.mes.dt.year
+    cont = tr.groupby(["id_concessao", "ano"]).mes.nunique()
+    ta = tr.groupby(["id_concessao", "ano"], as_index=False).veic_eq.sum()
     ta = ta[ta.set_index(["id_concessao", "ano"]).index.map(cont) == 12]
-    ta = ta.merge(cad[["id", "nome", "grupo"]], left_on="id_concessao", right_on="id")
-    ta["periodo_x"] = ta.ano.astype(str)
     ta = ta[ta.ano >= ta.ano.max() - 9] if len(ta) else ta
+    ta["periodo_x"], ta["ordem"] = ta.ano.astype(str), ta.ano.astype(float)
+    rot_ltm_tr = None
+    mes_max = traf.mes.max()
+    if com_ltm and mes_max.month != 12:
+        jan = tr[tr.mes > mes_max - pd.DateOffset(months=12)]
+        nm = jan.groupby("id_concessao").mes.nunique()
+        tl = jan[jan.id_concessao.map(nm) == 12].groupby("id_concessao", as_index=False).veic_eq.sum()
+        rot_ltm_tr = f"LTM {mes_max:%m/%Y}"
+        tl["ano"], tl["periodo_x"], tl["ordem"] = np.nan, rot_ltm_tr, 9999.0
+        ta = pd.concat([ta, tl], ignore_index=True)
+    ta = ta.merge(cad[["id", "nome", "grupo"]], left_on="id_concessao", right_on="id")
+
+    def ordem_x(df_):
+        return df_.drop_duplicates("periodo_x").sort_values("ordem")["periodo_x"].tolist()
+
+    def consolidado_p(f, col, titulo):
+        if f.empty or f[col].notna().sum() == 0:
+            st.caption(f"{titulo}: sem dados.")
+            return
+        g = f.groupby(["periodo_x", cor], as_index=False)[col].sum(min_count=1)
+        fig = px.bar(g, x="periodo_x", y=col, color=cor, color_discrete_map=COR_GRUPO if cor == "grupo" else None,
+                     category_orders={"periodo_x": ordem_x(f)}, labels={"periodo_x": "", col: "", cor: ""})
+        st.plotly_chart(layout(fig, titulo, x=True), width="stretch")
+
     k1, k2 = st.columns(2)
     with k1:
-        consolidado(ta, cor, "veic_eq", "Veículos equivalentes (anos completos)")
+        consolidado_p(ta, "veic_eq", "Veículos equivalentes (anos completos" + (f" + {rot_ltm_tr})" if rot_ltm_tr else ")"))
     if ft.empty:
         k2.info("Dados financeiros da CVM ainda não coletados: rode o workflow financeiro-spes no coletor.")
     else:
-        ft["periodo_x"] = ft.exercicio.astype(str)
         with k2:
-            consolidado(ft, cor, "receita_aj", "Receita líquida ajustada (sem construção, R$ mm)")
+            consolidado_p(ft, "receita_aj", "Receita líquida ajustada (sem construção, R$ mm)")
         k1, k2 = st.columns(2)
         with k1:
-            consolidado(ft, cor, "ebitda_aj", "EBITDA ajustado (+ D&A + provisão de manutenção, R$ mm)")
+            consolidado_p(ft, "ebitda_aj", "EBITDA ajustado (+ D&A + provisão de manutenção, R$ mm)")
         with k2:
-            consolidado(ft, cor, "capex", "Capex (imobilizado + intangível + ativo de contrato, R$ mm)")
+            consolidado_p(ft, "capex", "Capex (imobilizado + intangível + ativo de contrato, R$ mm)")
         k1, k2 = st.columns(2)
         with k1:
-            consolidado(ft, cor, "capex_manut", "Capex de manutenção (pagamento da provisão, R$ mm)")
+            consolidado_p(ft, "capex_manut", "Capex de manutenção (pagamento da provisão, R$ mm)")
         with k2:
-            g = ft.groupby("periodo_x", as_index=False)[["divida_bruta", "divida_liquida"]].sum(min_count=1)
+            g = ft.groupby(["periodo_x", "ordem"], as_index=False)[["divida_bruta", "divida_liquida"]].sum(min_count=1)
+            g = g.sort_values("ordem")
             fig = go.Figure([go.Bar(x=g.periodo_x, y=g.divida_bruta, name="Dívida bruta"),
                              go.Bar(x=g.periodo_x, y=g.divida_liquida, name="Dívida líquida")])
-            st.plotly_chart(layout(fig, "Dívida bruta e líquida (ex-arrendamento, R$ mm)", x=True), width="stretch")
+            fig = layout(fig, "Dívida bruta e líquida (ex-arrendamento, fim do período, R$ mm)", x=True)
+            fig.update_xaxes(categoryorder="array", categoryarray=g.periodo_x.tolist())
+            st.plotly_chart(fig, width="stretch")
         if por_spe:
-            consolidado(ft, cor, "divida_bruta", "Dívida bruta por SPE (R$ mm)")
+            consolidado_p(ft, "divida_bruta", "Dívida bruta por SPE (R$ mm)")
+        if rot_ltm_fin:
+            st.caption(f"{rot_ltm_fin}: SPEs com ITR até {ft.dt_fim.max():%m/%Y}."
+                       + (f" Com último ITR anterior (usado o LTM mais recente de cada uma): {', '.join(ltm_atras)}."
+                          if ltm_atras else "")
+                       + " SPEs sem ITR nos últimos 12 meses ficam fora da barra LTM.")
 
-        # ---- participação (último exercício completo)
-        ult = int(ft.exercicio.max())
-        st.markdown(f"**Participação — exercício {ult}** (cálculo próprio)")
-        base_tot = fin_filtrado(met.id, "anual")
-        base_tot = base_tot[base_tot.exercicio == ult]
-        vars_part = ["receita_aj", "ebitda_aj", "capex", "capex_manut", "divida_bruta", "divida_liquida"]
-        u = ft[ft.exercicio == ult]
-        veq_u = ta[ta.ano == ult].groupby("id").veic_eq.sum()
-        if por_spe:
-            tab = u.groupby(["grupo", "nome"])[vars_part].sum(min_count=1)
-            tab["veic_eq"] = u.groupby(["grupo", "nome"])["id"].first().map(veq_u)
-            part = tab / tab.groupby(level=0).transform("sum")
-            st.caption("Quanto cada SPE representa do total do grupo (SPEs com DFP no exercício).")
-        else:
-            tab = u.groupby("grupo")[vars_part].sum(min_count=1)
-            tab["veic_eq"] = ta[ta.ano == ult].groupby("grupo").veic_eq.sum()
-            part = tab / tab.sum()
-            st.caption("Quanto cada grupo representa do total das SPEs no filtro (SPEs com DFP no exercício).")
-        part = part.rename(columns=ROT).reset_index()
-        st.dataframe(part, hide_index=True, width="stretch",
-                     column_config={ROT[k]: st.column_config.NumberColumn(format="percent") for k in vars_part + ["veic_eq"]})
+    # ---- participação: % por período, com seleção do indicador (cálculo próprio)
+    st.markdown("**Participação por período** (cálculo próprio)")
+    vars_part = ["veic_eq", "receita_aj", "ebitda_aj", "capex", "capex_manut", "divida_bruta", "divida_liquida"]
+    var_p = st.selectbox("Indicador", vars_part, format_func=ROT.get, key="map_part_ind")
+    src = ta if var_p == "veic_eq" else ft
+    if src.empty or var_p not in src or src[var_p].notna().sum() == 0:
+        st.caption("Sem dados para o indicador no filtro.")
+    else:
+        chave = ["periodo_x", "ordem", "grupo"] + (["nome"] if por_spe else [])
+        g = src.groupby(chave, as_index=False)[var_p].sum(min_count=1).dropna(subset=[var_p])
+        tot = g.groupby(["periodo_x", "grupo"] if por_spe else ["periodo_x"])[var_p].transform("sum")
+        g["part"] = g[var_p] / tot.where(tot > 0)
+        g = g.dropna(subset=["part"])
+        n_gr = g.grupo.nunique() if por_spe else 1
+        fig = px.bar(g, x="periodo_x", y="part", color=cor, color_discrete_map=COR_GRUPO if cor == "grupo" else None,
+                     facet_row="grupo" if por_spe and n_gr > 1 else None, text_auto=".0%",
+                     category_orders={"periodo_x": ordem_x(g)}, labels={"periodo_x": "", "part": "", cor: "", "grupo": ""},
+                     hover_data={var_p: ":,.0f", "part": ":.1%"})
+        fig.update_traces(textposition="inside", insidetextanchor="middle", textfont_size=10)
+        fig = layout(fig, f"{ROT[var_p]}: participação " + ("de cada SPE no total do grupo" if por_spe else
+                                                            "de cada grupo no total do filtro"),
+                     h=max(420, 300 * n_gr), pct=True, x=True)
+        fig.update_layout(barmode="stack", uniformtext_minsize=9, uniformtext_mode="hide")
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Cada barra soma 100% do período (SPEs com dado no período: DFP nos anos fechados; ITR no LTM; "
+                   "tráfego com 12 meses completos). Períodos em que o total é zero ou negativo (possível na dívida "
+                   "líquida) ficam de fora; SPE com valor negativo aparece abaixo de zero.")
+        with st.expander("Tabela da participação"):
+            tb = g.pivot_table(index=["grupo", "nome"] if por_spe else "grupo", columns="periodo_x", values="part")
+            tb = tb[[c_ for c_ in ordem_x(g) if c_ in tb.columns]].reset_index()
+            st.dataframe(tb, hide_index=True, width="stretch",
+                         column_config={c_: st.column_config.NumberColumn(format="percent") for c_ in ordem_x(g)})
 
-    # ---- custo da dívida consolidado
+    # ---- custo da dívida consolidado (debêntures)
     st.subheader("Custo da dívida e spread sobre o soberano")
     deb, fonte_deb = debentures(cad)
     deb_f = deb[deb["id"].isin(sel.id)].drop_duplicates("codigo") if not deb.empty else deb
@@ -852,20 +904,6 @@ with aba_mapa:
         cB.metric("Custo nominal a mercado (pond.)", f"{tot['Custo nominal mercado (% a.a.)']:.2f}%")
         cB.metric("Spread emissão s/ pré soberano", f"{tot['Spread nominal emissão s/ pré (p.p.)']:.2f} p.p.")
         cB.metric("Spread mercado s/ pré soberano", f"{tot['Spread nominal mercado s/ pré (p.p.)']:.2f} p.p.")
-    if not fin.empty:
-        lt = fin[(fin.tipo == "ltm") & fin.id.isin(sel.id)].sort_values("dt_fim").groupby("id").tail(1)
-        lt = lt[lt.custo_implicito.notna()]
-        if len(lt):
-            w = lt.divida_bruta
-            ci = media_pond(lt.custo_implicito, w)
-            dur = media_pond(custo_debentures(deb_f, pj)["prazo_anos"], deb_f["saldo_rs_mm"]) if not deb_f.empty else 3.0
-            pre = curva_juros(pj, pj["data"].max(), "pre", [dur if pd.notna(dur) else 3.0])[0] if not pj.empty else np.nan
-            cB.metric("Custo implícito de toda a dívida (LTM)", fmt_pct(ci, 2),
-                      f"{(ci - pre) * 100:+.2f} p.p. vs pré {fmt_pct(pre, 2)} ({dur:.1f} anos)" if pd.notna(pre) else None,
-                      delta_color="off",
-                      help="Juros pagos (DFC, 12 meses) ÷ dívida bruta média, ponderado pela dívida bruta de cada SPE. "
-                           "Cobre bancos, BNDES e debêntures, em regime de caixa. Spread contra a ETTJ pré ANBIMA no "
-                           "prazo médio das debêntures (3 anos se não houver).")
     st.caption("Emissão = remuneração da escritura (custo vigente da dívida existente); mercado = taxa indicativa ANBIMA "
                "(custo de refinanciar hoje). Soberano = ETTJ ANBIMA no prazo (duration): real para IPCA+, pré para "
                "prefixadas; no CDI+ o spread é o próprio spread sobre o CDI. Nominal = custo equivalente com a curva de hoje.")
