@@ -1255,7 +1255,7 @@ with aba_op:
             mx_ = d[d.icsd_base_mista.fillna(False).astype(bool) & d.icsd_arr.notna()]
             if len(mx_):
                 fig.add_trace(go.Scatter(x=mx_.x, y=mx_.icsd_arr, mode="markers", name="(2) com linha mista dívida + arrendamento",
-                                         marker=dict(symbol="diamond-open", size=13, color="#C0504D", line=dict(width=2))))
+                                         marker=dict(symbol="diamond-open", size=9, color="#C0504D", line=dict(width=1.5))))
             k1.plotly_chart(layout(fig, "ICSD (x)", x=True), width="stretch")
             k1.caption("(1) Regra geral = (EBITDA aj. − arrendamento − IR/CS pagos − capex de manutenção) ÷ (juros + principal da "
                        "dívida). (2) = (EBITDA aj. − IR/CS pagos − capex de manutenção) ÷ (juros + principal + arrendamento). "
