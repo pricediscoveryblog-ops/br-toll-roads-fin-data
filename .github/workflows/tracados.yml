@@ -1,0 +1,41 @@
+name: tracados-rodovias
+
+# Regenera geo/tracados.geojson (traçado das concessões para o mapa):
+# SNV/DNIT x trechos ANTT (federais) + KMZ por lote da ARTESP (SP).
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/gerar_tracados.py"
+      - "geo/complementos_tracados.csv"
+  schedule:
+    - cron: "41 11 * * 1"   # segundas, 08:41 BRT (depois da coleta semanal do coletor)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracados-rodovias
+  cancel-in-progress: true
+
+jobs:
+  gerar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dependências
+        run: pip install -q "pandas>=2.2" "pyarrow>=15" "shapely>=2.0"
+      - name: Gerar traçados
+        run: python scripts/gerar_tracados.py
+      - name: Commitar se mudou
+        run: |
+          git config user.name "tracados-bot"
+          git config user.email "tracados-bot@users.noreply.github.com"
+          git add geo/tracados.geojson
+          if git diff --cached --quiet; then echo "sem mudança"; exit 0; fi
+          git commit -q -m "geo: traçados das rodovias $(date -u +%Y-%m-%d)"
+          git push -q
