@@ -9,6 +9,7 @@ Fontes (todas públicas):
 Métricas calculadas aqui são marcadas como cálculo próprio.
 """
 import io
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -224,6 +225,30 @@ def estados_geojson() -> tuple[dict | None, pd.DataFrame]:
         feats.append({"type": "Feature", "properties": {"sigla": sigla},
                       "geometry": {"type": "MultiPolygon", "coordinates": polys}})
     return {"type": "FeatureCollection", "features": feats}, pd.DataFrame(rot)
+
+
+ARQ_TRACADOS = Path(__file__).resolve().parent / "geo" / "tracados.geojson"
+
+
+@st.cache_data(ttl=TTL, show_spinner=False)
+def tracados_oficiais() -> tuple[pd.DataFrame, str]:
+    """Traçado de cada concessão (geo/tracados.geojson, gerado por scripts/gerar_tracados.py): federais = km dos
+    trechos concedidos da ANTT cortados sobre a geometria do SNV/DNIT; SP = KMZ por lote da ARTESP; contratos
+    encerrados e BRs delegadas a MG pelos critérios de geo/complementos_tracados.csv. Uma linha por polilinha."""
+    try:
+        g = json.loads(ARQ_TRACADOS.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame(), ""
+    linhas = []
+    for f in g.get("features", []):
+        p = f["properties"]
+        if p.get("km_ini") is not None:
+            trecho = f"{p['rodovia']}/{p['uf']} km {p['km_ini']:,.1f}–{p['km_fim']:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        else:
+            trecho = f"{p['rodovia']}/{p['uf']}"
+        for c in f["geometry"]["coordinates"]:
+            linhas.append({"id_concessao": p["id_concessao"], "path": c, "trecho": trecho, "fonte": p.get("fonte", "")})
+    return pd.DataFrame(linhas), str(g.get("snv", ""))
 
 
 @st.cache_data(ttl=TTL)
@@ -815,24 +840,47 @@ with aba_mapa:
         pt["raio"] = 4000 + np.sqrt(pt.veic_eq_ltm.astype(float)) * 4
         pt["veic_eq_ltm_txt"] = pt.veic_eq_ltm.map(lambda v: f"{v:,.0f}".replace(",", "."))
         camadas = []
-        tracado = st.checkbox("Mostrar traçado das rodovias (aproximado, ligando as praças)", value=True, key="map_tracado")
+        tracado = st.checkbox("Mostrar traçado das rodovias", value=True, key="map_tracado")
         ufs_geo, ufs_rot = estados_geojson()
         if ufs_geo:
             camadas.append(pdk.Layer("GeoJsonLayer", ufs_geo, stroked=True, filled=True, get_fill_color=[128, 128, 128, 18],
                                      get_line_color=[160, 160, 160, 220], line_width_min_pixels=1, pickable=False))
             camadas.append(pdk.Layer("TextLayer", ufs_rot, get_position="[lon, lat]", get_text="sigla", get_size=12,
                                      get_color=[150, 150, 150, 230], pickable=False))
-        if tracado and not pr.empty:
+        tr_of, versao_snv = tracados_oficiais()
+        com_tracado = set()
+        if tracado:
             caminhos = []
-            q = pr.assign(km=pd.to_numeric(pr["km_m"], errors="coerce")).dropna(subset=["km"])
-            for (_i, _rod, _uf), gq in q.groupby(["id_concessao", "rodovia", "uf"]):
-                gq = gq.drop_duplicates(["latitude", "longitude"]).sort_values("km")
-                if len(gq) >= 2:
-                    caminhos.append({"path": gq[["longitude", "latitude"]].astype(float).values.tolist(),
-                                     "cor": hex_rgb(COR_GRUPO.get(gq.grupo.iloc[0], "#B0B0B0"))})
+            info_sel = sel.set_index("id")
+            if not tr_of.empty:
+                t_ = tr_of[tr_of.id_concessao.isin(sel.id)].copy()
+                com_tracado = set(t_.id_concessao)
+                for c_ in ("nome", "grupo", "veic_eq_ltm"):
+                    t_[c_] = t_.id_concessao.map(info_sel[c_])
+                t_["local"] = "Traçado: " + t_.trecho
+                caminhos.append(t_)
+            # reserva para SPE sem traçado oficial: linha ligando as praças da mesma rodovia/UF na ordem do km
+            if not pr.empty:
+                q = pr[~pr.id_concessao.isin(com_tracado)].assign(km=pd.to_numeric(pr["km_m"], errors="coerce")).dropna(subset=["km"])
+                aprox = []
+                for (_i, _rod, _uf), gq in q.groupby(["id_concessao", "rodovia", "uf"]):
+                    gq = gq.drop_duplicates(["latitude", "longitude"]).sort_values("km")
+                    if len(gq) >= 2:
+                        aprox.append({"id_concessao": _i, "path": gq[["longitude", "latitude"]].astype(float).values.tolist(),
+                                      "nome": gq.nome.iloc[0], "grupo": gq.grupo.iloc[0],
+                                      "veic_eq_ltm": info_sel.veic_eq_ltm.get(_i, 0),
+                                      "local": f"Aproximação (liga as praças): {_rod}/{_uf}"})
+                if aprox:
+                    caminhos.append(pd.DataFrame(aprox))
             if caminhos:
-                camadas.append(pdk.Layer("PathLayer", pd.DataFrame(caminhos), get_path="path", get_color="cor",
-                                         width_min_pixels=3, width_scale=1, get_width=4, opacity=0.85, pickable=False))
+                cm = pd.concat(caminhos, ignore_index=True)
+                cm["cor"] = cm.grupo.map(lambda g: hex_rgb(COR_GRUPO.get(g, "#B0B0B0")))
+                cm["veic_eq_ltm_txt"] = pd.to_numeric(cm.veic_eq_ltm, errors="coerce").fillna(0).map(
+                    lambda v: f"{v:,.0f}".replace(",", "."))
+                camadas.append(pdk.Layer("PathLayer", cm[["path", "cor", "nome", "grupo", "local", "veic_eq_ltm_txt"]],
+                                         get_path="path", get_color="cor", width_min_pixels=3, get_width=4,
+                                         opacity=0.85, pickable=True, auto_highlight=True, joint_rounded=True,
+                                         cap_rounded=True))
         st.pydeck_chart(pdk.Deck(
             map_style=None, initial_view_state=pdk.ViewState(latitude=-18, longitude=-50, zoom=3.6),
             layers=camadas + [pdk.Layer("ScatterplotLayer", pt, get_position="[longitude, latitude]", get_fill_color="cor",
@@ -841,11 +889,16 @@ with aba_mapa:
             tooltip={"text": "{nome} ({grupo})\n{local}\nVeíc. eq. LTM: {veic_eq_ltm_txt}"}))
         legenda({g: COR_GRUPO[g] for g in GRUPOS if g in set(pt.grupo)})
         sem_pos = sel[~sel.id.isin(set(com_praca)) & ~sel.id.isin(set(sem.id))]
-        st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. Traçado: linha que liga as "
-                   "praças da mesma rodovia e UF na ordem do km (ANTT) — aproximação, não a geometria exata da via; trechos "
-                   "antes da 1ª e depois da última praça não aparecem. "
-                   "Praças federais com coordenadas da ANTT; demais SPEs (SP, MG e federais sem praça georreferenciada) "
-                   "num ponto aproximado do trecho, do cadastro. Tamanho = veículos equivalentes LTM."
+        sem_tr = sel[~sel.id.isin(com_tracado)].nome if tracado else pd.Series(dtype=str)
+        st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. "
+                   f"Traçado das federais: km inicial/final de cada trecho concedido (ANTT, dados abertos) cortado sobre a "
+                   f"geometria do SNV {versao_snv} do DNIT — só a pista principal das BRs (acessos e rodovias estaduais "
+                   "dos lotes do PR não estão no SNV). SP: malha de cada lote nos KMZ da ARTESP (dados abertos). Contratos "
+                   "federais encerrados e BRs delegadas a MG: mesmo trecho da sucessora ou pelas descrições de local do SNV "
+                   "(critério em geo/complementos_tracados.csv — cálculo próprio). Sem traçado oficial, a linha liga as "
+                   "praças na ordem do km (aproximação). Praças federais com coordenadas da ANTT; demais SPEs num ponto "
+                   "aproximado do cadastro. Tamanho = veículos equivalentes LTM."
+                   + (f" Sem traçado: {', '.join(sem_tr)}." if len(sem_tr) else "")
                    + (f" Sem posição no mapa: {', '.join(sem_pos.nome)}." if len(sem_pos) else ""))
 
     # ---- consolidado (gráficos)
