@@ -1953,11 +1953,29 @@ with aba_comp:
         fig.update_yaxes(categoryorder="array", categoryarray=list(barras.rotulo)[::-1])
         if ind in PCT:
             fig.update_xaxes(tickformat=".0%")
+        # valores extremos (ex.: ICSD com serviço da dívida quase zero) espremem o gráfico: eixo nos valores típicos
+        fora = pd.DataFrame()
+        vv = barras.valor.dropna()
+        if len(vv) >= 5:
+            q1_, q3_ = vv.quantile(0.25), vv.quantile(0.75)
+            lo_, hi_ = q1_ - 3 * (q3_ - q1_), q3_ + 3 * (q3_ - q1_)
+            fora = barras[(barras.valor < lo_) | (barras.valor > hi_)]
+            if len(fora) and st.checkbox(f"Limitar o eixo aos valores típicos ({len(fora)} fora da escala)", value=True,
+                                         key="cmp_eixo"):
+                dentro = vv[(vv >= lo_) & (vv <= hi_)]
+                pad_ = 0.08 * (dentro.max() - dentro.min() or 1)
+                fig.update_xaxes(range=[min(0, dentro.min() - pad_), max(0, dentro.max() + pad_)])
+            else:
+                fora = pd.DataFrame()
         st.plotly_chart(layout(fig, f"{ROT.get(ind, ind)} — {len(rk)} SPEs" + (f" e {len(bm)} medianas" if len(bm) else ""),
                                h=max(360, 22 * len(barras) + 140)), width="stretch")
         st.caption("Barras cheias = SPEs (cor pela chave escolhida); barras cinza hachuradas = medianas de referência, "
                    "calculadas sobre todas as SPEs da base com dado (não só as do filtro), para cada grupo/região/UF/agência "
                    "das SPEs mostradas. n = número de SPEs na mediana. Cálculo próprio.")
+        if len(fora):
+            st.caption("Fora da escala (barra cortada na borda): " + "; ".join(
+                f"{r_.rotulo}: {r_.valor:,.2f}" for r_ in fora.itertuples()) +
+                ". Critério próprio: além de 3 intervalos interquartis dos quartis.")
         with st.expander("Tabela do gráfico"):
             st.dataframe(rk[["posição", "nome", "grupo", "regiao_nome", "uf_principal", "agencia", ind] +
                             (["periodo_fin"] if "periodo_fin" in rk else [])], hide_index=True, width="stretch")
