@@ -826,8 +826,12 @@ with aba_mapa:
         pr["local"] = pr.praca_de_pedagio + " — " + pr.rodovia.astype(str) + "/" + pr.uf.astype(str)
         com_praca = set(pr.id_concessao)
         pontos.append(pr[["nome", "grupo", "local", "latitude", "longitude", "veic_eq_ltm"]])
-    # SPEs sem praça georreferenciada: ponto aproximado do cadastro (sede/centro do trecho)
-    sem = sel[~sel.id.isin(com_praca)].copy()
+    # SPEs sem praça georreferenciada: ponto aproximado do cadastro (sede/centro do trecho) — só quando não há traçado
+    # oficial; com traçado (ex.: lotes ARTESP), a linha já localiza a SPE e o VEQ LTM vai no tooltip da linha
+    tracado = st.checkbox("Mostrar traçado das rodovias", value=True, key="map_tracado")
+    tr_of, versao_snv = tracados_oficiais()
+    ids_tracado = set(tr_of.id_concessao) if (tracado and not tr_of.empty) else set()
+    sem = sel[~sel.id.isin(com_praca) & ~sel.id.isin(ids_tracado)].copy()
     sem["latitude"], sem["longitude"] = pd.to_numeric(sem.lat, errors="coerce"), pd.to_numeric(sem.lon, errors="coerce")
     sem = sem.dropna(subset=["latitude"])
     if len(sem):
@@ -840,14 +844,12 @@ with aba_mapa:
         pt["raio"] = 4000 + np.sqrt(pt.veic_eq_ltm.astype(float)) * 4
         pt["veic_eq_ltm_txt"] = pt.veic_eq_ltm.map(lambda v: f"{v:,.0f}".replace(",", "."))
         camadas = []
-        tracado = st.checkbox("Mostrar traçado das rodovias", value=True, key="map_tracado")
         ufs_geo, ufs_rot = estados_geojson()
         if ufs_geo:
             camadas.append(pdk.Layer("GeoJsonLayer", ufs_geo, stroked=True, filled=True, get_fill_color=[128, 128, 128, 18],
                                      get_line_color=[160, 160, 160, 220], line_width_min_pixels=1, pickable=False))
             camadas.append(pdk.Layer("TextLayer", ufs_rot, get_position="[lon, lat]", get_text="sigla", get_size=12,
                                      get_color=[150, 150, 150, 230], pickable=False))
-        tr_of, versao_snv = tracados_oficiais()
         com_tracado = set()
         if tracado:
             caminhos = []
@@ -888,7 +890,7 @@ with aba_mapa:
                               line_width_min_pixels=1)],
             tooltip={"text": "{nome} ({grupo})\n{local}\nVeíc. eq. LTM: {veic_eq_ltm_txt}"}))
         legenda({g: COR_GRUPO[g] for g in GRUPOS if g in set(pt.grupo)})
-        sem_pos = sel[~sel.id.isin(set(com_praca)) & ~sel.id.isin(set(sem.id))]
+        sem_pos = sel[~sel.id.isin(set(com_praca)) & ~sel.id.isin(set(sem.id)) & ~sel.id.isin(com_tracado)]
         sem_tr = sel[~sel.id.isin(com_tracado)].nome if tracado else pd.Series(dtype=str)
         st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. "
                    f"Traçado das federais: km inicial/final de cada trecho concedido (ANTT, dados abertos) cortado sobre a "
@@ -896,8 +898,9 @@ with aba_mapa:
                    "dos lotes do PR não estão no SNV). SP: malha de cada lote nos KMZ da ARTESP (dados abertos). Contratos "
                    "federais encerrados e BRs delegadas a MG: mesmo trecho da sucessora ou pelas descrições de local do SNV "
                    "(critério em geo/complementos_tracados.csv — cálculo próprio). Sem traçado oficial, a linha liga as "
-                   "praças na ordem do km (aproximação). Praças federais com coordenadas da ANTT; demais SPEs num ponto "
-                   "aproximado do cadastro. Tamanho = veículos equivalentes LTM."
+                   "praças na ordem do km (aproximação). Círculos = praças federais (coordenadas da ANTT), tamanho = veículos "
+                   "equivalentes que passaram na praça nos últimos 12 meses. SPEs sem praça georreferenciada (SP e MG) "
+                   "aparecem só pela linha — o VEQ LTM da SPE fica no tooltip; sem traçado, num ponto aproximado do cadastro."
                    + (f" Sem traçado: {', '.join(sem_tr)}." if len(sem_tr) else "")
                    + (f" Sem posição no mapa: {', '.join(sem_pos.nome)}." if len(sem_pos) else ""))
 
