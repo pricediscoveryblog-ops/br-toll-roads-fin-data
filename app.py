@@ -228,6 +228,13 @@ def estados_geojson() -> tuple[dict | None, pd.DataFrame]:
 
 
 ARQ_TRACADOS = Path(__file__).resolve().parent / "geo" / "tracados.geojson"
+# Ressalvas de traçado por SPE: aparecem no tooltip da linha e numa nota abaixo do mapa quando a SPE está no filtro
+NOTA_TRACADO = {
+    "M-VLIB": "Via Liberdade: BR-356 pelos km do Ministério dos Transportes; MG-262 (km 0–72,8) e MG-329 (km 100,5–134,5) "
+              "atribuídas pelos nomes de local da base do DER-MG — cálculo próprio, a validar no contrato.",
+    "M-TRI": "EPR Triângulo: só as BRs delegadas (BR-452 e BR-365); as estaduais do lote (MG-427, MG-190, CMG-452, "
+             "CMG-462, LMG-782/798/812) ainda não têm traçado — faltam os km de cada trecho no contrato.",
+}
 
 
 @st.cache_data(ttl=TTL, show_spinner=False)
@@ -861,7 +868,8 @@ with aba_mapa:
                 com_tracado = set(t_.id_concessao)
                 for c_ in ("nome", "grupo", "veic_eq_ltm"):
                     t_[c_] = t_.id_concessao.map(info_sel[c_])
-                t_["local"] = "Traçado: " + t_.trecho
+                t_["local"] = "Traçado: " + t_.trecho + t_.id_concessao.map(
+                    lambda i: "\n⚠ traçado a validar (ver nota abaixo do mapa)" if i in NOTA_TRACADO else "")
                 caminhos.append(t_)
             # reserva para SPE sem traçado oficial: linha ligando as praças da mesma rodovia/UF na ordem do km
             if not pr.empty:
@@ -905,6 +913,9 @@ with aba_mapa:
                    "aparecem só pela linha — o VEQ LTM da SPE fica no tooltip; sem traçado, num ponto aproximado do cadastro."
                    + (f" Sem traçado: {', '.join(sem_tr)}." if len(sem_tr) else "")
                    + (f" Sem posição no mapa: {', '.join(sem_pos.nome)}." if len(sem_pos) else ""))
+        notas = [NOTA_TRACADO[i] for i in NOTA_TRACADO if i in set(sel.id)]
+        if tracado and notas:
+            st.caption("⚠ **Traçados a validar** — " + " ".join(notas))
 
     # ---- consolidado (gráficos)
     st.subheader("Consolidado das SPEs no filtro")
