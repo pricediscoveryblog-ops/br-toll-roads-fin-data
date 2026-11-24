@@ -285,6 +285,38 @@ def trafego_mensal() -> pd.DataFrame:
     return t
 
 
+@st.cache_data(ttl=TTL, show_spinner=False)
+def ltm_por_spe() -> pd.DataFrame:
+    """Veíc. equivalentes em 12 meses acumulados: linhas = mês (calendário completo), colunas = SPE. Mês sem dado
+    publicado fica vazio e derruba as somas de 12 meses que o contêm (não completa lacuna)."""
+    t = trafego_mensal()
+    if t.empty:
+        return pd.DataFrame()
+    p = t.groupby(["mes", "id_concessao"]).veic_eq.sum().unstack()
+    p = p.reindex(pd.date_range(p.index.min(), p.index.max(), freq="MS"))
+    return p.rolling(12, min_periods=12).sum()
+
+
+def pracas_mensal(t: pd.DataFrame) -> pd.DataFrame:
+    """Veíc. eq. por praça (colunas) e mês (calendário completo). Em mês com dado da SPE, praça sem número = 0 (ainda
+    não existia ou foi desativada/renomeada); mês sem nenhum dado da SPE fica vazio."""
+    p = t.groupby(["mes", "praca"]).veic_eq.sum().unstack()
+    p = p.reindex(pd.date_range(p.index.min(), p.index.max(), freq="MS"))
+    tem = p.notna().any(axis=1)
+    p.loc[tem] = p.loc[tem].fillna(0.0)
+    return p
+
+
+def agrupar_pracas(p: pd.DataFrame, ordem: pd.Series, n: int) -> pd.DataFrame:
+    """Mantém as n praças com maior valor em `ordem` e soma o resto em 'Outras praças'."""
+    top = list(ordem.sort_values(ascending=False).index[:n])
+    resto = [c_ for c_ in p.columns if c_ not in top]
+    out = p[top].copy()
+    if resto:
+        out["Outras praças"] = p[resto].sum(axis=1, min_count=1)
+    return out
+
+
 def nz(s):
     return s.fillna(0.0)
 
@@ -1093,18 +1125,23 @@ with aba_op:
         fonte = t.fonte.iloc[0]
         m = t.groupby("mes", as_index=False)[["veic_eq", "veic_total", "veic_pesado"]].sum().sort_values("mes")
         m["ltm"] = m.veic_eq.rolling(12).sum()
-        q1, q2, q3 = st.columns([1.2, 1.5, 1.3])
-        freq = q1.radio("Frequência do volume", ["Mensal", "Trimestral", "Últimos 12 meses (LTM)", "Anual (anos completos)"],
+        pm = pracas_mensal(t)                     # praça x mês (calendário completo)
+        n_pracas = pm.shape[1]
+        ult = m.mes.max()
+
+        # ---------- volume e distribuição por praça (mesma frequência)
+        st.markdown("#### Volume")
+        freq = st.radio("Frequência", ["Mensal", "Trimestral", "Últimos 12 meses (LTM)", "Anual (anos completos)"],
                         horizontal=True, key="op_freq",
-                        help="Trimestral = soma dos 3 meses de cada trimestre (só trimestres completos), sem acumular. "
-                             "LTM = soma móvel dos últimos 12 meses, um ponto por mês (tira a sazonalidade).")
-        modo_c = q2.radio("Crescimento", ["a/a (LTM vs LTM anterior)", "Base zero (acumulado desde o início)"],
-                          horizontal=True, key="op_cresc")
-        cmp_pib = q3.checkbox("Comparar com o PIB real", key="op_pib")
+                        help="Vale para os dois gráficos abaixo. Trimestral = soma dos 3 meses de cada trimestre (só "
+                             "trimestres completos), sem acumular. LTM = soma móvel dos últimos 12 meses, um ponto por mês "
+                             "(tira a sazonalidade). Anual = só anos com 12 meses publicados.")
         if freq == "Mensal":
             fig = go.Figure([go.Bar(x=m.mes, y=m.veic_eq, name="Veíc. equivalentes"),
                              go.Bar(x=m.mes, y=m.veic_total, name="Veíc. físicos", opacity=0.5)])
             fig.update_layout(barmode="group")
+            dist = pm.dropna(how="all")
+            dist.index = list(dist.index)
         elif freq == "Trimestral":
             tq = m.assign(tri=m.mes.dt.to_period("Q")).groupby("tri").agg(
                 veic_eq=("veic_eq", "sum"), veic_total=("veic_total", "sum"), n=("mes", "count"))
@@ -1114,11 +1151,16 @@ with aba_op:
                              go.Bar(x=tq.rot, y=tq.veic_total, name="Veíc. físicos", opacity=0.5)])
             fig.update_layout(barmode="group")
             fig.update_xaxes(type="category", categoryorder="array", categoryarray=tq.rot.tolist())
+            dist = pm.dropna(how="all").groupby(pm.dropna(how="all").index.to_period("Q")).sum()
+            dist = dist.loc[dist.index.isin(tq.tri)]
+            dist.index = [f"{p.quarter}T{str(p.year)[2:]}" for p in dist.index]
         elif freq.startswith("Últimos 12"):
             lt_ = m.assign(ltm_total=m.veic_total.rolling(12).sum()).dropna(subset=["ltm"])
             fig = go.Figure([go.Scatter(x=lt_.mes, y=lt_.ltm, mode="lines", name="Veíc. equivalentes (LTM)", line=dict(width=3)),
                              go.Scatter(x=lt_.mes, y=lt_.ltm_total, mode="lines", name="Veíc. físicos (LTM)",
                                         line=dict(width=2, dash="dot"))])
+            dist = pm.rolling(12, min_periods=12).sum().dropna(how="all")
+            dist.index = list(dist.index)
         else:
             a = m.assign(ano=m.mes.dt.year).groupby("ano").agg(veic_eq=("veic_eq", "sum"), veic_total=("veic_total", "sum"),
                                                                 n=("mes", "count"))
@@ -1126,25 +1168,123 @@ with aba_op:
             fig = go.Figure([go.Bar(x=a.ano.astype(str), y=a.veic_eq, name="Veíc. equivalentes"),
                              go.Bar(x=a.ano.astype(str), y=a.veic_total, name="Veíc. físicos", opacity=0.5)])
             fig.update_layout(barmode="group")
-        st.plotly_chart(layout(fig, f"Volume de tráfego (fonte: {fonte})"), width="stretch")
-        # crescimento: LTM para tirar a sazonalidade; janela escolhida na barra "Prazo analisado"
-        g = m.dropna(subset=["ltm"]).reset_index(drop=True)
-        if len(g) > 1:
+            dist = pm.dropna(how="all").groupby(pm.dropna(how="all").index.year).sum()
+            dist = dist.loc[dist.index.isin(a.ano)]
+            dist.index = [str(x_) for x_ in dist.index]
+        v1, v2 = st.columns(2)
+        v1.plotly_chart(layout(fig, f"Volume de tráfego (fonte: {fonte})", h=400), width="stretch")
+        if n_pracas < 2:
+            v2.info("Só uma praça publicada para esta SPE: sem distribuição por praça.")
+        elif dist.empty:
+            v2.info("Sem períodos completos nesta frequência para a distribuição por praça.")
+        else:
+            todas_p = v2.checkbox(f"Mostrar todas as {n_pracas} praças", value=n_pracas <= 12, key=f"op_dist_todas_{op}",
+                                  help="Desmarcado: as 10 praças com mais tráfego nos últimos 12 meses e o resto em 'Outras praças'.")
+            peso = pm[pm.index > ult - pd.DateOffset(months=12)].sum()
+            dv = dist if todas_p else agrupar_pracas(dist, peso, 10)
+            dv = dv[[c_ for c_ in dv.columns if dv[c_].sum() > 0]]
+            dv = dv.div(dv.sum(axis=1).replace(0, np.nan), axis=0)
+            if freq.startswith("Últimos 12"):
+                fig = go.Figure([go.Scatter(x=dv.index, y=dv[c_], name=str(c_), mode="lines", stackgroup="um",
+                                            line=dict(width=0.5), hovertemplate="%{y:.1%}") for c_ in dv.columns])
+            else:
+                fig = go.Figure([go.Bar(x=dv.index, y=dv[c_], name=str(c_), hovertemplate="%{y:.1%}") for c_ in dv.columns])
+                fig.update_layout(barmode="stack", bargap=0.05)
+                if freq != "Mensal":
+                    fig.update_xaxes(type="category")
+            fig.update_yaxes(range=[0, 1])
+            v2.plotly_chart(layout(fig, "Distribuição do tráfego por praça (% dos veíc. eq.)", h=400, pct=True), width="stretch")
+        st.caption("Distribuição = participação de cada praça nos veículos equivalentes do período (cálculo próprio sobre "
+                   f"os dados da {fonte}). Praça que some ou aparece pode ser abertura, desativação ou só troca de nome na "
+                   "fonte — a ANTT, por exemplo, renomeia praças e cria pórticos de free flow.")
+
+        # ---------- crescimento: LTM (tira a sazonalidade) com comparações e decomposição por praça
+        st.markdown("#### Crescimento")
+        lp = pm.rolling(12, min_periods=12).sum()           # LTM por praça
+        tot = lp.sum(axis=1, min_count=1)
+        g = pd.DataFrame({"mes": tot.index, "ltm": tot.values})
+        g["cresc"] = g.ltm / g.ltm.shift(12) - 1           # a/a no calendário completo, depois recortado
+        g = g.dropna(subset=["ltm"]).reset_index(drop=True)
+        if len(g) < 2:
+            st.info("Menos de 13 meses de tráfego publicados: sem série de crescimento em 12 meses acumulados.")
+        else:
+            L = ltm_por_spe()
+            outras = [c_ for c_ in L.columns if c_ != op]
+            ids_gr = [] if info["grupo"] == SEM_GRUPO else [i for i in cad[cad.grupo == info["grupo"]].id if i in outras]
+            ids_rg = [i for i in cad[cad.regiao == info["regiao"]].id if i in outras]
+            c1, c2, c3 = st.columns([1.1, 1.5, 1.7])
+            modo_c = c1.radio("Medida", ["a/a (LTM vs LTM anterior)", "Base zero (acumulado desde o início)"],
+                              key="op_cresc")
+            cmp_pib = c1.checkbox("Comparar com o PIB real", key="op_pib")
+            decomp = c1.checkbox("Decompor por praça", key="op_decomp", disabled=n_pracas < 2,
+                                 help="Quanto cada praça somou (ou tirou) do crescimento total." if n_pracas >= 2
+                                 else "Só uma praça publicada para esta SPE.")
+            op_med = {f"Grupo {info['grupo']} (demais SPEs, {len(ids_gr)})": ids_gr,
+                      f"Região {REGIOES.get(info['regiao'], info['regiao'])} (demais SPEs, {len(ids_rg)})": ids_rg,
+                      f"Todas as SPEs da base (demais, {len(outras)})": outras}
+            op_med = {k_: v_ for k_, v_ in op_med.items() if v_}
+            meds = c2.multiselect("Comparar com a mediana de", list(op_med), key=f"op_cmp_med_{op}")
+            cesta = c3.multiselect("Cesta de SPEs", outras, key=f"op_cesta_{op}",
+                                   format_func=lambda i: f"{nomes.get(i, i)} ({cad.set_index('id').grupo.get(i, '')})")
+            cesta_modo = c3.radio("Mostrar a cesta como", ["Mediana da cesta", "Cada SPE"], horizontal=True,
+                                  key="op_cesta_modo", disabled=not cesta)
             g["rot"] = g.mes.dt.strftime("%m/%Y")
             xs_t = list(g.rot)
             p0, p1 = st.select_slider("Prazo analisado", options=xs_t, value=(xs_t[max(0, len(xs_t) - 61)], xs_t[-1]),
                                       key=f"op_traf_prazo_{op}")
             i0, i1 = xs_t.index(p0), xs_t.index(p1)
-            g["cresc"] = g.ltm.pct_change(12)          # a/a na série inteira, depois recortado
             gj = g.iloc[i0:i1 + 1].copy()
-            if not modo_c.startswith("a/a"):
+            mes0, mes1 = gj.mes.iloc[0], gj.mes.iloc[-1]
+            aa = modo_c.startswith("a/a")
+            if not aa:
                 gj["cresc"] = gj.ltm / gj.ltm.iloc[0] - 1
-            anos_t = max((gj.mes.iloc[-1] - gj.mes.iloc[0]).days / 365.25, 1e-9)
+            anos_t = max((mes1 - mes0).days / 365.25, 1e-9)
             resumo_t = []
             if i1 > i0 and gj.ltm.iloc[0] > 0:
                 r_ = gj.ltm.iloc[-1] / gj.ltm.iloc[0]
-                resumo_t.append({"Série": "Veíc. eq. (LTM)", "Acumulado": r_ - 1, "Ao ano (CAGR)": r_ ** (1 / anos_t) - 1})
-            fig = go.Figure([go.Scatter(x=gj.mes, y=gj.cresc, mode="lines", name="Veíc. eq. (LTM)", line=dict(width=3))])
+                resumo_t.append({"Série": "Esta SPE", "SPEs": 1, "Acumulado": r_ - 1, "Ao ano (CAGR)": r_ ** (1 / anos_t) - 1})
+            fig = go.Figure([go.Scatter(x=gj.mes, y=gj.cresc, mode="lines", name=f"{info['nome']} (veíc. eq. LTM)",
+                                        line=dict(width=3.5, color="#1f77b4"))])
+
+            def serie_pares(ids_):
+                """Crescimento de cada SPE do conjunto no recorte (mesma medida da SPE) e o acumulado p0 → p1."""
+                Lw = L.reindex(gj.mes)[ids_]
+                if aa:
+                    cr = (L / L.shift(12) - 1).reindex(gj.mes)[ids_]
+                else:
+                    b_ = Lw.iloc[0].where(Lw.iloc[0] > 0)
+                    cr = Lw / b_ - 1
+                ac = (Lw.iloc[-1] / Lw.iloc[0].where(Lw.iloc[0] > 0) - 1).dropna()
+                return cr, ac
+
+            def add_med(nome_, ids_, cor, traco):
+                cr, ac = serie_pares(ids_)
+                n_ = cr.notna().sum(axis=1)
+                y_ = cr.median(axis=1).where(n_ > 0)
+                if y_.notna().any():
+                    fig.add_trace(go.Scatter(x=gj.mes, y=y_, mode="lines", name=nome_, line=dict(color=cor, dash=traco, width=2.5),
+                                             customdata=n_, hovertemplate="%{y:.1%} · mediana de %{customdata} SPEs"))
+                if len(ac) and i1 > i0:
+                    med_ = ac.median()
+                    resumo_t.append({"Série": nome_ + " — mediana dos acumulados", "SPEs": len(ac), "Acumulado": med_,
+                                     "Ao ano (CAGR)": (1 + med_) ** (1 / anos_t) - 1 if med_ > -1 else np.nan})
+
+            cores_med = ["#ff7f0e", "#17becf", "#7f7f7f"]
+            for (k_, ids_), cor_ in zip(op_med.items(), cores_med):
+                if k_ in meds:
+                    add_med("Mediana — " + k_.split(" (")[0], ids_, COR_GRUPO.get(info["grupo"], cor_) if k_.startswith("Grupo") else cor_,
+                            "dash")
+            if cesta:
+                if cesta_modo == "Mediana da cesta":
+                    add_med(f"Mediana — cesta ({len(cesta)} SPEs)", cesta, "#d62728", "dashdot")
+                else:
+                    cr, ac = serie_pares(cesta)
+                    for j_, i_ in enumerate(cesta):
+                        fig.add_trace(go.Scatter(x=gj.mes, y=cr[i_], mode="lines", name=nomes.get(i_, i_),
+                                                 line=dict(width=1.6, color=PALETA[(j_ + 3) % len(PALETA)])))
+                        if i_ in ac.index and i1 > i0:
+                            resumo_t.append({"Série": nomes.get(i_, i_), "SPEs": 1, "Acumulado": ac[i_],
+                                             "Ao ano (CAGR)": (1 + ac[i_]) ** (1 / anos_t) - 1 if ac[i_] > -1 else np.nan})
             if cmp_pib:
                 pv = pd.read_csv(pasta_m / "pib_volume_trimestral.csv") if (pasta_m / "pib_volume_trimestral.csv").exists() else pd.DataFrame()
                 if len(pv):
@@ -1152,31 +1292,76 @@ with aba_op:
                     pv["acum4"] = pv.indice_volume.rolling(4).sum()
                     pv = pv.dropna(subset=["acum4"])
                     pv["cresc"] = pv.acum4.pct_change(4)
-                    pv = pv[(pv.data >= gj.mes.min() - pd.DateOffset(months=2)) & (pv.data <= gj.mes.max())].copy()
+                    pv = pv[(pv.data >= mes0 - pd.DateOffset(months=2)) & (pv.data <= mes1)].copy()
                     if len(pv):
-                        if not modo_c.startswith("a/a"):
+                        if not aa:
                             pv["cresc"] = pv.acum4 / pv.acum4.iloc[0] - 1
                         fig.add_trace(go.Scatter(x=pv.data, y=pv.cresc, mode="lines+markers", name="PIB real (4 tri acum.)",
                                                  line=dict(color="#2CA02C", dash="dot", width=2.5)))
                         if len(pv) > 1 and pv.acum4.iloc[0] > 0:
                             r_ = pv.acum4.iloc[-1] / pv.acum4.iloc[0]
                             anos_p = max((pv.data.iloc[-1] - pv.data.iloc[0]).days / 365.25, 1e-9)
-                            resumo_t.append({"Série": f"PIB real ({pv.data.iloc[0]:%m/%Y} → {pv.data.iloc[-1]:%m/%Y})",
+                            resumo_t.append({"Série": f"PIB real ({pv.data.iloc[0]:%m/%Y} → {pv.data.iloc[-1]:%m/%Y})", "SPEs": np.nan,
                                              "Acumulado": r_ - 1, "Ao ano (CAGR)": r_ ** (1 / anos_p) - 1})
             fig.add_hline(y=0, line_dash="dot", line_color="gray")
-            c_t1, c_t2 = st.columns([1, 2.4])
-            c_t2.plotly_chart(layout(fig, f"Crescimento do tráfego {p0} → {p1} — " + ("a/a, 12 meses acumulados" if modo_c.startswith("a/a")
-                                                                                   else "acumulado desde o início do prazo"), pct=True), width="stretch")
+            c_t1, c_t2 = st.columns([1.1, 2.4])
+            c_t2.plotly_chart(layout(fig, f"Crescimento do tráfego {p0} → {p1} — " + ("a/a, 12 meses acumulados" if aa
+                                                                                   else "acumulado desde o início do prazo"),
+                                     h=420, pct=True), width="stretch")
             if resumo_t:
                 c_t1.markdown(f"**{p0} → {p1}** ({anos_t:.1f} anos)")
                 c_t1.dataframe(pd.DataFrame(resumo_t), hide_index=True, width="stretch",
-                               column_config={"Acumulado": st.column_config.NumberColumn(format="percent"),
+                               column_config={"SPEs": st.column_config.NumberColumn(format="%d"),
+                                              "Acumulado": st.column_config.NumberColumn(format="percent"),
                                               "Ao ano (CAGR)": st.column_config.NumberColumn(format="percent")})
             st.caption("Escolha início e fim na barra 'Prazo analisado'. Tráfego em 12 meses acumulados (neutraliza a "
-                       "sazonalidade). PIB real: IBGE (SIDRA 1620, índice de volume), soma de 4 trimestres, no trimestre mais "
-                       "próximo do mesmo recorte. Acumulado e CAGR comparam o fim com o início (cálculo próprio). Entrada de "
-                       "praças novas infla o crescimento — ver 'mesmas praças' na aba Comparar SPEs.")
-        ult = m.mes.max()
+                       "sazonalidade); mês sem dado publicado derruba as somas de 12 meses que o contêm. Medianas (cálculo "
+                       "próprio): a cada mês, mediana do crescimento das SPEs do conjunto que têm 12 meses completos (a/a) ou "
+                       "dado no início do prazo (base zero), sem contar esta SPE; o número de SPEs aparece ao passar o mouse e "
+                       "muda ao longo do tempo (contratos que entram e saem da base). Na tabela, 'mediana dos acumulados' = "
+                       "mediana do crescimento p0 → p1 das SPEs com dado nas duas pontas. PIB real: IBGE (SIDRA 1620, índice "
+                       "de volume), soma de 4 trimestres. Entrada de praças novas infla o crescimento — use 'Decompor por praça'.")
+
+            # decomposição do crescimento por praça
+            if decomp and n_pracas >= 2:
+                lpj = lp.reindex(gj.mes)
+                if aa:
+                    lpa = lp.shift(12).reindex(gj.mes)
+                    contrib = (lpj - lpa.fillna(0)).div(lpa.sum(axis=1, min_count=1), axis=0)
+                else:
+                    contrib = (lpj - lpj.iloc[0]).div(lpj.iloc[0].sum())
+                contrib = contrib.loc[:, contrib.abs().sum() > 0]
+                if contrib.empty:
+                    st.info("Sem variação por praça no prazo escolhido.")
+                else:
+                    cg = agrupar_pracas(contrib, contrib.abs().mean(), 8)
+                    fig = go.Figure([go.Bar(x=cg.index, y=cg[c_], name=str(c_), hovertemplate="%{y:+.1%}") for c_ in cg.columns])
+                    fig.add_trace(go.Scatter(x=gj.mes, y=gj.cresc.values, name="Crescimento total", mode="lines",
+                                             line=dict(color="black", width=2.5)))
+                    fig.update_layout(barmode="relative", bargap=0.1)
+                    fig.add_hline(y=0, line_dash="dot", line_color="gray")
+                    d1, d2 = st.columns([2.4, 1.1])
+                    d1.plotly_chart(layout(fig, "Contribuição de cada praça ao crescimento — " + (
+                        "a/a (pontos sobre o LTM de 12 meses antes)" if aa else "acumulado desde o início do prazo"),
+                                           h=420, pct=True), width="stretch")
+                    b0, b1 = lpj.iloc[0], lpj.iloc[-1]
+                    tb = pd.DataFrame({"Praça": lpj.columns, f"LTM {p0}": b0.values, f"LTM {p1}": b1.values})
+                    tb["Variação"] = np.where(b0.values > 0, b1.values / np.where(b0.values > 0, b0.values, 1) - 1, np.nan)
+                    tb["Contribuição (p.p. do total)"] = (b1.values - b0.values) / b0.sum() if b0.sum() > 0 else np.nan
+                    tb["Situação"] = np.where(b0.values <= 0, "nova no prazo", np.where(b1.values <= 0, "saiu no prazo", ""))
+                    tb = tb[(tb[f"LTM {p0}"] > 0) | (tb[f"LTM {p1}"] > 0)]
+                    tb = tb.reindex(tb["Contribuição (p.p. do total)"].abs().sort_values(ascending=False).index)
+                    d2.markdown(f"**{p0} → {p1}, por praça**")
+                    d2.dataframe(tb, hide_index=True, width="stretch", height=380,
+                                 column_config={f"LTM {p0}": st.column_config.NumberColumn(format="localized"),
+                                                f"LTM {p1}": st.column_config.NumberColumn(format="localized"),
+                                                "Variação": st.column_config.NumberColumn(format="percent"),
+                                                "Contribuição (p.p. do total)": st.column_config.NumberColumn(format="percent")})
+                    st.caption("Contribuição (cálculo próprio) = variação do LTM da praça ÷ LTM total da SPE na base (12 meses "
+                               "antes no a/a; início do prazo na base zero). A soma das barras dá o crescimento total (linha "
+                               "preta). Praça nova entra com contribuição igual a todo o seu volume; se for só renomeação, a "
+                               "praça com o nome antigo aparece com contribuição negativa equivalente.")
+
         pp = t[t.mes > ult - pd.DateOffset(months=12)].groupby("praca", as_index=False)[["veic_eq", "veic_total", "veic_pesado"]].sum()
         pp["pct_pesados"] = pp.veic_pesado / pp.veic_total
         with st.expander("Praças — últimos 12 meses"):
