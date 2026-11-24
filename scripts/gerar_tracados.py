@@ -5,7 +5,10 @@ Fontes (todas públicas):
   coletor-concessoes/dados/trechos_antt.parquet: rodovia, UF, km inicial e final de cada SPE) cortados sobre a
   geometria do SNV do DNIT (Sistema Nacional de Viação, segmentos com km inicial/final). Por padrão lê o GeoJSON do
   SNV 202604A espelhado em github.com/lucaasmeiraf/snv-geojson (cópia do arquivo do DNIT); `SNV_URL` troca a fonte.
-- Contratos federais encerrados e BRs delegadas a MG: geo/complementos_tracados.csv (critério documentado por linha).
+- Contratos federais encerrados, BRs delegadas a MG e lotes estaduais de MG (Artemig): geo/complementos_tracados.csv
+  (critério e fonte por linha). Coluna `base`: `snv` corta o SNV/DNIT; `dermg` corta a malha estadual do DER-MG
+  (geo/der_mg_trechos.geojson, cópia da camada IDE:ide_0401_mg_rodovias_lin da IDE-Sisema, mesmo esquema do SNV com
+  código SRE e km inicial/final por segmento).
 - SP (ARTESP): KMZ oficiais por lote do dataset "malha-rodoviaria" do portal de dados abertos da ARTESP.
   O portal só é acessível de redes abertas (GitHub Actions); se falhar, os lotes de SP ficam de fora e o app usa o
   ponto aproximado do cadastro.
@@ -34,6 +37,7 @@ from shapely.ops import linemerge, substring
 RAIZ = Path(__file__).resolve().parents[1]
 SAIDA = RAIZ / "geo" / "tracados.geojson"
 COMPLEMENTOS = RAIZ / "geo" / "complementos_tracados.csv"
+DER_MG = RAIZ / "geo" / "der_mg_trechos.geojson"   # cópia da camada do DER-MG (IDE-Sisema) com as estaduais dos lotes
 RAW = "https://raw.githubusercontent.com/pricediscoveryblog-ops/coletor-concessoes/"
 URL_TRECHOS = os.environ.get("TRECHOS_URL", RAW + "dados/trechos_antt.parquet")
 URL_CADASTRO = os.environ.get("CADASTRO_URL", RAW + "main/cadastro/concessoes.csv")
@@ -271,15 +275,31 @@ def main() -> None:
             continue
         feats.append(feature(r.id_concessao, f"BR-{br}", r.uf_sigla, r.a, r.b, linhas,
                              f"ANTT trechos concedidos (km) × {fonte_snv}"))
-    # 2) complementos documentados (contratos encerrados, BRs delegadas)
-    comp = pd.read_csv(COMPLEMENTOS, sep=";", dtype={"km_ini": float, "km_fim": float})
+    # 2) complementos documentados (contratos encerrados, BRs delegadas, lotes estaduais de MG)
+    der = None
+    if DER_MG.exists():
+        gd = json.loads(DER_MG.read_text(encoding="utf-8"))
+        der = SNV({"features": [{"geometry": f["geometry"], "properties": {
+            "vl_br": f["properties"]["codigo_snv"][:4], "sg_uf": "MG", "vl_km_inic": f["properties"]["km_inicial"],
+            "vl_km_fina": f["properties"]["km_final"], "sg_tipo_tr": "B", "ds_tipo_ad": f["properties"]["jurisdicao"],
+            "vl_codigo": f["properties"]["codigo_snv"], "versao_snv": ""}} for f in gd["features"]]})
+    comp = pd.read_csv(COMPLEMENTOS, sep=";", dtype={"km_ini": float, "km_fim": float}, keep_default_na=False)
     for r in comp.itertuples():
-        br = br_num(r.rodovia)
-        excl = "Concessão Federal" if r.id_concessao.startswith("M-") else None
-        linhas = [ln.simplify(TOL) for ln in snv.trecho(br, r.uf, r.km_ini, r.km_fim, excluir_adm=excl)]
+        excl = r.excluir_adm or None
+        if r.base == "dermg":
+            num = re.search(r"(\d{1,3})\s*$", r.rodovia).group(1).zfill(3)
+            chave, base, rot = num + "E", der, r.rodovia
+            fonte = "DER-MG (IDE-Sisema, malha rodoviária estadual)"
+        else:
+            chave = br_num(r.rodovia)
+            base, rot, fonte = snv, f"BR-{chave}", fonte_snv
+        if base is None or (chave, r.uf) not in base.seg:
+            log.append(f"complemento sem base: {r.id_concessao} {r.rodovia}/{r.uf}")
+            continue
+        linhas = [ln.simplify(TOL) for ln in base.trecho(chave, r.uf, r.km_ini, r.km_fim, excluir_adm=excl)]
         if linhas:
-            feats.append(feature(r.id_concessao, f"BR-{br}", r.uf, r.km_ini, min(r.km_fim, max(
-                s["kf"] for s in snv.seg[(br, r.uf)])), linhas, f"{fonte_snv}; critério: {r.criterio}"))
+            kf = min(r.km_fim, max(s["kf"] for s in base.seg[(chave, r.uf)]))
+            feats.append(feature(r.id_concessao, rot, r.uf, r.km_ini, kf, linhas, f"{fonte}; critério: {r.criterio}"))
         else:
             log.append(f"complemento sem geometria: {r.id_concessao} {r.rodovia}/{r.uf}")
     # 3) SP
