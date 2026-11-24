@@ -1,16 +1,41 @@
-id_concessao;rodovia;uf;km_ini;km_fim;criterio
-F-AFD;BR-381;MG;477.2;949.9;Contrato encerrado (Autopista Fernão Dias): mesmo trecho que a ANTT atribui hoje à sucessora F-MMS (BR-381 BH-SP)
-F-AFD;BR-381;SP;0;90.4;Contrato encerrado (Autopista Fernão Dias): mesmo trecho que a ANTT atribui hoje à sucessora F-MMS
-F-CCRPONTE;BR-101;RJ;321.6;334.4;Contrato encerrado (CCR Ponte): mesmo trecho que a ANTT atribui hoje à F-ECOPONTE (Ponte Rio-Niterói)
-F-NDUTRA;BR-116;RJ;169.0;339.5;Contrato encerrado (NovaDutra): trecho da BR-116 que a ANTT atribui hoje à sucessora F-RIOSP
-F-NDUTRA;BR-116;SP;0;231.9;Contrato encerrado (NovaDutra): trecho da BR-116 que a ANTT atribui hoje à sucessora F-RIOSP
-F-CONCEPA;BR-290;RS;0;98.1;Contrato encerrado (Concepa, Osório-Porto Alegre): trecho da BR-290 que a ANTT atribui hoje à F-VSUL (aproximação,  Concepa incluía acessos em Porto Alegre/Guaíba)
-F-CRT;BR-116;RJ;2.1;144.4;Contrato encerrado (CRT, Além Paraíba-Teresópolis-Rio): BR-116/RJ até o entroncamento com a BR-040 (aproximação a partir do trecho atual da F-ERM)
-F-VIA040;BR-040;DF;0;999;Contrato encerrado (Via 040, Brasília-Juiz de Fora): BR-040 inteira no DF
-F-VIA040;BR-040;GO;0;999;Contrato encerrado (Via 040): BR-040 inteira em GO
-F-VIA040;BR-040;MG;0;773.5;Contrato encerrado (Via 040): BR-040/MG até o início do trecho da Concer (km 773,5 - ANTT)
-F-VBAHIA;BR-116;BA;423.7;945.3;Contrato encerrado (Via Bahia): BR-116 do ENTR BR-116/324 (Feira de Santana) à divisa BA/MG (descrições de local do SNV)
-F-VBAHIA;BR-324;BA;513.5;629.3;Contrato encerrado (Via Bahia): BR-324 de Feira de Santana a Salvador (descrições de local do SNV), sem BA-526/BA-528
-M-BR135;BR-135;MG;363.6;673.8;BR-135 delegada a MG: de Montes Claros (ENTR BR-122/251/365) ao ENTR BR-040, segmentos marcados como jurisdição estadual no SNV (aproximação,  sem MG-231/LMG-754)
-M-TRI;BR-452;MG;0;999;BR-452 delegada a MG: segmentos de jurisdição estadual no SNV (aproximação,  rodovias estaduais do lote não incluídas)
-M-TRI;BR-365;MG;476.2;608.0;BR-365 em convênio federal/estadual no SNV (aproximação,  rodovias estaduais do lote não incluídas)
+id_concessao;base;rodovia;uf;km_ini;km_fim;excluir_adm;criterio
+F-AFD;snv;BR-381;MG;477.2;949.9;;Contrato encerrado (Autopista Fernão Dias): mesmo trecho que a ANTT atribui hoje à sucessora F-MMS (BR-381 BH-SP)
+F-AFD;snv;BR-381;SP;0;90.4;;Contrato encerrado (Autopista Fernão Dias): mesmo trecho que a ANTT atribui hoje à sucessora F-MMS
+F-CCRPONTE;snv;BR-101;RJ;321.6;334.4;;Contrato encerrado (CCR Ponte): mesmo trecho que a ANTT atribui hoje à F-ECOPONTE (Ponte Rio-Niterói)
+F-NDUTRA;snv;BR-116;RJ;169.0;339.5;;Contrato encerrado (NovaDutra): trecho da BR-116 que a ANTT atribui hoje à sucessora F-RIOSP
+F-NDUTRA;snv;BR-116;SP;0;231.9;;Contrato encerrado (NovaDutra): trecho da BR-116 que a ANTT atribui hoje à sucessora F-RIOSP
+F-CONCEPA;snv;BR-290;RS;0;98.1;;Contrato encerrado (Concepa, Osório-Porto Alegre): trecho da BR-290 que a ANTT atribui hoje à F-VSUL (aproximação, Concepa incluía acessos em Porto Alegre/Guaíba)
+F-CRT;snv;BR-116;RJ;2.1;144.4;;Contrato encerrado (CRT, Além Paraíba-Teresópolis-Rio): BR-116/RJ até o entroncamento com a BR-040 (aproximação a partir do trecho atual da F-ERM)
+F-VIA040;snv;BR-040;DF;0;999;;Contrato encerrado (Via 040, Brasília-Juiz de Fora): BR-040 inteira no DF
+F-VIA040;snv;BR-040;GO;0;999;;Contrato encerrado (Via 040): BR-040 inteira em GO
+F-VIA040;snv;BR-040;MG;0;773.5;;Contrato encerrado (Via 040): BR-040/MG até o início do trecho da Concer (km 773,5 - ANTT)
+F-VBAHIA;snv;BR-116;BA;423.7;945.3;;Contrato encerrado (Via Bahia): BR-116 do ENTR BR-116/324 (Feira de Santana) à divisa BA/MG (descrições de local do SNV)
+F-VBAHIA;snv;BR-324;BA;513.5;629.3;;Contrato encerrado (Via Bahia): BR-324 de Feira de Santana a Salvador (descrições de local do SNV), sem BA-526/BA-528
+M-BR135;snv;BR-135;MG;363.6;673.8;Concessão Federal;BR-135 delegada a MG: de Montes Claros (ENTR BR-122/251/365) ao ENTR BR-040, segmentos de jurisdição estadual no SNV (aproximação, sem MG-231/LMG-754)
+M-TRI;snv;BR-452;MG;0;999;Concessão Federal;BR-452 delegada a MG: segmentos de jurisdição estadual no SNV (aproximação, rodovias estaduais do lote ainda não incluídas)
+M-TRI;snv;BR-365;MG;476.2;608.0;Concessão Federal;BR-365 em convênio federal/estadual no SNV (aproximação, rodovias estaduais do lote ainda não incluídas)
+M-MG050;dermg;MG-050;MG;57.6;402.0;;Sistema MG-050/BR-265/BR-491 (Via Nascentes): MG-050 km 57+600 a 402+000 (EIA/RIMA Nascentes das Gerais, BID Invest)
+M-MG050;snv;BR-491;MG;0;4.7;;Sistema MG-050: BR-491 km 0 a 4+700, contorno de São Sebastião do Paraíso (EIA/RIMA, BID Invest)
+M-MG050;snv;BR-265;MG;637.2;659.5;;Sistema MG-050: BR-265 km 637+200 a 659+500, até a divisa MG/SP (EIA/RIMA, BID Invest)
+M-VNASC;dermg;MG-050;MG;57.6;402.0;;Via Nascentes = concessionária atual do Sistema MG-050/BR-265/BR-491 (Agência Minas): mesmo traçado de M-MG050
+M-VNASC;snv;BR-491;MG;0;4.7;;Via Nascentes: BR-491 km 0 a 4+700
+M-VNASC;snv;BR-265;MG;637.2;659.5;;Via Nascentes: BR-265 km 637+200 a 659+500
+M-SUL;dermg;CMG-146;MG;611.6;646.7;;Lote Sul de Minas (Agência Minas, 03/03/2023): MGC-146 km 611,60 a 646,70 (Poços de Caldas-Andradas)
+M-SUL;dermg;MG-173;MG;0;19.9;;Lote Sul de Minas: MG-173 km 0,00 a 52,10, exceto km 19,90-21,70 (municipal)
+M-SUL;dermg;MG-173;MG;21.7;52.1;;Lote Sul de Minas: MG-173 km 0,00 a 52,10, exceto km 19,90-21,70 (municipal)
+M-SUL;dermg;MG-290;MG;5.5;97.2;;Lote Sul de Minas: MG-290 km 5,50 a 97,20 (Pouso Alegre-Jacutinga)
+M-SUL;dermg;MG-295;MG;130.3;152.8;;Lote Sul de Minas: MG-295 km 130,30 a 152,80 (Bueno Brandão-Inconfidentes)
+M-SUL;dermg;MG-455;MG;0;42.0;;Lote Sul de Minas: MG-455 km 0,00 a 42,00 (Santa Rita de Caldas-Andradas)
+M-SUL;snv;BR-459;MG;11.3;166.5;;Lote Sul de Minas: BR-459 km 11,30 a 166,50 (Poços de Caldas-Itajubá)
+M-SUL;dermg;MG-459;MG;0;31.4;;Lote Sul de Minas: MG-459 km 0,00 a 31,40 (Ouro Fino-Monte Sião)
+M-SUL;dermg;LMG-877;MG;0;25.3;;Lote Sul de Minas: LMG-877 km 0,00 a 25,30 (Poços de Caldas)
+M-VCAFE;dermg;MG-167;MG;0;43.8;;Lote Vias do Café (Agência Minas): MG-167 km 0,00 a 43,8
+M-VCAFE;snv;BR-265;MG;338.4;403.0;;Lote Vias do Café: BR-265 km 338,40 a 403 (Lavras-Boa Esperança)
+M-VCAFE;dermg;LMG-863;MG;0;5.0;;Lote Vias do Café: LMG-863 km 0,00 a 5,00
+M-VCAFE;dermg;CMG-491;MG;4.65;81.05;;Lote Vias do Café: CMG-491 km 4,65 a 81,05 (São Sebastião do Paraíso-Guaxupé)
+M-VCAFE;dermg;CMG-491;MG;108.25;259.95;;Lote Vias do Café: CMG-491 km 108,25 a 259,95 (Muzambinho-Três Corações)
+M-VCAFE;snv;BR-146;MG;505.3;532.5;;Lote Vias do Café: BR-146 km 505,30 a 532,50 (Guaxupé-Muzambinho)
+M-VCAFE;dermg;CMG-369;MG;124.4;188.5;;Lote Vias do Café: CMG-369 km 124,40 a 188,50 (Boa Esperança-Alfenas)
+M-VLIB;snv;BR-356;MG;27.8;111.1;;Lote Via Liberdade (briefing Min. Transportes): BR-356 km 27,8 a 111,1
+M-VLIB;dermg;MG-262;MG;0;72.8;;Lote Via Liberdade: trecho de 72,8 km do ENTR MG-329 ao ENTR MG-129 (Mariana) - na base do DER-MG é a MG-262 km 0-73,3 (atribuição por nome de local, cálculo próprio)
+M-VLIB;dermg;MG-329;MG;100.5;134.5;;Lote Via Liberdade: trecho de 34 km a partir do ENTR BR-262 - MG-329 km 100,5 a 134,5 (atribuição por nome de local, cálculo próprio)
