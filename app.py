@@ -1266,14 +1266,13 @@ with aba_op:
                                              customdata=n_, hovertemplate="%{y:.1%} · mediana de %{customdata} SPEs"))
                 if len(ac) and i1 > i0:
                     med_ = ac.median()
-                    resumo_t.append({"Série": nome_ + " — mediana dos acumulados", "SPEs": len(ac), "Acumulado": med_,
+                    resumo_t.append({"Série": nome_, "SPEs": len(ac), "Acumulado": med_,
                                      "Ao ano (CAGR)": (1 + med_) ** (1 / anos_t) - 1 if med_ > -1 else np.nan})
 
             cores_med = ["#ff7f0e", "#17becf", "#7f7f7f"]
             for (k_, ids_), cor_ in zip(op_med.items(), cores_med):
                 if k_ in meds:
-                    add_med("Mediana — " + k_.split(" (")[0], ids_, COR_GRUPO.get(info["grupo"], cor_) if k_.startswith("Grupo") else cor_,
-                            "dash")
+                    add_med("Mediana — " + k_.split(" (")[0], ids_, cor_, "dash")
             if cesta:
                 if cesta_modo == "Mediana da cesta":
                     add_med(f"Mediana — cesta ({len(cesta)} SPEs)", cesta, "#d62728", "dashdot")
@@ -1311,7 +1310,8 @@ with aba_op:
             if resumo_t:
                 c_t1.markdown(f"**{p0} → {p1}** ({anos_t:.1f} anos)")
                 c_t1.dataframe(pd.DataFrame(resumo_t), hide_index=True, width="stretch",
-                               column_config={"SPEs": st.column_config.NumberColumn(format="%d"),
+                               column_config={"Série": st.column_config.TextColumn(width="large"),
+                                              "SPEs": st.column_config.NumberColumn(format="%d"),
                                               "Acumulado": st.column_config.NumberColumn(format="percent"),
                                               "Ao ano (CAGR)": st.column_config.NumberColumn(format="percent")})
             st.caption("Escolha início e fim na barra 'Prazo analisado'. Tráfego em 12 meses acumulados (neutraliza a "
@@ -1384,18 +1384,76 @@ with aba_op:
         if d.empty:
             st.info("Sem períodos nesta periodicidade.")
         else:
+            # ---------- painel de comparação: vale para todos os gráficos da seção
+            tipo_f = d.tipo.iloc[0]
+            base_f = fin[(fin.tipo == tipo_f) & (fin.id != op)].copy()
+            base_f["ebitda_aj_por_veq"] = div(base_f.ebitda_aj * 1e6, base_f.veic_eq)
+            d["ebitda_aj_por_veq"] = div(d.ebitda_aj * 1e6, d.veic_eq)
+            ids_f = sorted(set(base_f.id), key=lambda i: nomes.get(i, i))
+            ids_f_gr = [] if info["grupo"] == SEM_GRUPO else [i for i in ids_f if cad.set_index("id").grupo.get(i) == info["grupo"]]
+            ids_f_rg = [i for i in ids_f if cad.set_index("id").regiao.get(i) == info["regiao"]]
+            st.markdown("**Comparação** — vale para todos os gráficos abaixo")
+            f1, f2 = st.columns([1.3, 1.7])
+            op_med_f = {f"Grupo {info['grupo']} (demais SPEs, {len(ids_f_gr)})": ("Grupo " + str(info["grupo"]), ids_f_gr, "#ff7f0e"),
+                        f"Região {REGIOES.get(info['regiao'], info['regiao'])} (demais SPEs, {len(ids_f_rg)})":
+                            ("Região " + REGIOES.get(info["regiao"], str(info["regiao"])), ids_f_rg, "#17becf"),
+                        f"Todas as SPEs com CVM (demais, {len(ids_f)})": ("Todas as SPEs", ids_f, "#7f7f7f")}
+            op_med_f = {k_: v_ for k_, v_ in op_med_f.items() if v_[1]}
+            meds_f = f1.multiselect("Comparar com a mediana de", list(op_med_f), key=f"op_fin_med_{op}",
+                                    default=[k_ for k_ in op_med_f if not k_.startswith("Região")])
+            cesta_f = f2.multiselect("Cesta de SPEs", ids_f, key=f"op_fin_cesta_{op}",
+                                     format_func=lambda i: f"{nomes.get(i, i)} ({cad.set_index('id').grupo.get(i, '')})")
+            cesta_modo_f = f2.radio("Mostrar a cesta como", ["Mediana da cesta", "Cada SPE"], horizontal=True,
+                                    key="op_fin_cesta_modo", disabled=not cesta_f)
+            conj_f = [(f"Mediana — {op_med_f[k_][0]}", op_med_f[k_][1], op_med_f[k_][2], "dash") for k_ in meds_f]
+            if cesta_f:
+                if cesta_modo_f == "Mediana da cesta":
+                    conj_f.append((f"Mediana — cesta ({len(cesta_f)} SPEs)", cesta_f, "#d62728", "dashdot"))
+                else:
+                    conj_f += [(nomes.get(i_, i_), [i_], PALETA[(j_ + 3) % len(PALETA)], "dot") for j_, i_ in enumerate(cesta_f)]
+            st.caption("Medianas (cálculo próprio) das SPEs com DFP/ITR na CVM no mesmo período e periodicidade, sem contar esta "
+                       "SPE; o número de SPEs em cada ponto aparece ao passar o mouse. Gráficos em R$ mm não recebem mediana "
+                       "(SPEs de tamanhos muito diferentes): a comparação deles é feita pelas versões normalizadas — margens, "
+                       "por veículo equivalente, por km, conversão em caixa e % da dívida no curto prazo.")
+
+            def add_comp(fig_, col, pct_=False, yaxis=None, sufixo=""):
+                """Acrescenta ao gráfico a mediana de `col` em cada conjunto escolhido no painel (ou cada SPE da cesta)."""
+                fmt_ = ".1%" if pct_ else ",.2f"
+                for nome_, ids_, cor_, traco_ in conj_f:
+                    gb_ = base_f[base_f.id.isin(ids_)].groupby("dt_fim")[col]
+                    y_ = d.dt_fim.map(gb_.median())
+                    n_ = d.dt_fim.map(gb_.count()).fillna(0).astype(int)
+                    if y_.notna().any():
+                        fig_.add_trace(go.Scatter(x=d.x, y=y_, name=nome_ + sufixo, mode="lines+markers", yaxis=yaxis,
+                                                  line=dict(color=cor_, dash=traco_, width=2), marker=dict(size=5),
+                                                  customdata=n_, hovertemplate=f"%{{y:{fmt_}}} · %{{customdata}} SPE(s)"))
+
+            ROT_F = {**ROT, "margem_ebitda_aj": "Margem EBITDA aj.", "margem_ebitda_aj_pos_arrend": "Margem EBITDA aj. pós-arrend.",
+                     "ebitda_aj_por_veq": "EBITDA aj. por veíc. eq. (R$)"}
             k1, k2 = st.columns(2)
             fig = go.Figure([go.Bar(x=d.x, y=d.receita_aj, name="Receita líquida ajustada"),
                              go.Bar(x=d.x, y=d.ebitda_aj, name="EBITDA ajustado"),
                              go.Bar(x=d.x, y=d.ebitda_aj_pos_arrend, name="EBITDA aj. pós-arrendamento")])
             k1.plotly_chart(layout(fig, "Receita e EBITDA ajustados (R$ mm)", x=True), width="stretch")
-            fig = go.Figure([go.Scatter(x=d.x, y=d.margem_ebitda_aj, name="Margem EBITDA aj.", mode="lines+markers"),
-                             go.Scatter(x=d.x, y=d.margem_ebitda_aj_pos_arrend, name="Margem pós-arrend.", mode="lines+markers")])
-            k2.plotly_chart(layout(fig, "Margens", pct=True, x=True), width="stretch")
+            v_mg = k2.selectbox("Margem comparada", ["margem_ebitda_aj", "margem_ebitda_aj_pos_arrend"],
+                                format_func=lambda k: ROT_F[k], key="op_fin_cmp_mg")
+            fig = go.Figure([go.Scatter(x=d.x, y=d.margem_ebitda_aj, name="Margem EBITDA aj.", mode="lines+markers", line=dict(width=3)),
+                             go.Scatter(x=d.x, y=d.margem_ebitda_aj_pos_arrend, name="Margem pós-arrend.", mode="lines+markers", line=dict(width=3))])
+            add_comp(fig, v_mg, pct_=True)
+            k2.plotly_chart(layout(fig, f"Margens — medianas: {ROT_F[v_mg].lower()}", pct=True, x=True), width="stretch")
             st.caption("Receita líquida ajustada = receita líquida sem receita de construção (ICPC 01; identificada na DRE, "
                        "DVA ou DFC). EBITDA ajustado = EBIT + D&A − margem de construção + constituição da provisão de "
                        "manutenção (ajuste não caixa da DFC; atualização monetária/AVP pura fica de fora por ser financeira). "
                        "Pós-arrendamento = − pagamentos de arrendamento (principal + juros) da DFC.")
+            # receita e EBITDA normalizados (comparáveis entre SPEs de tamanhos diferentes)
+            n1, n2 = st.columns([1, 2.4])
+            v_nm = n1.selectbox("Receita/EBITDA por unidade", ["tarifa_media", "ebitda_aj_por_veq", "ebitda_aj_por_km"],
+                                format_func=lambda k: ROT_F[k], key="op_fin_cmp_norm")
+            n1.caption("Tarifa média = receita líquida ajustada ÷ veículos equivalentes do mesmo período; EBITDA por veíc. eq. "
+                       "idem; por km = extensão do cadastro. Cálculo próprio.")
+            fig = go.Figure([go.Bar(x=d.x, y=d[v_nm], name="Esta SPE", marker_color="#1f77b4", opacity=0.85)])
+            add_comp(fig, v_nm)
+            n2.plotly_chart(layout(fig, f"{ROT_F[v_nm]} — SPE vs. comparação", h=360, x=True), width="stretch")
             # crescimento vs macro
             st.markdown("**Crescimento vs. PIB nominal, IPCA e dólar**")
             g1, g2 = st.columns([1, 2])
@@ -1403,6 +1461,8 @@ with aba_op:
             vars_c = g1.multiselect("Variáveis", ["receita_aj", "ebitda_aj", "ebitda_aj_pos_arrend"],
                                     default=["receita_aj", "ebitda_aj"], format_func=lambda k: ROT[k], key="op_fin_vars")
             macro_sel = g1.multiselect("Macro", macro_aba.OPCOES_MACRO, default=["PIB nominal", "IPCA"], key="op_fin_macro")
+            v_cr = g1.selectbox("Variável comparada com as medianas", ["receita_aj", "ebitda_aj", "ebitda_aj_pos_arrend"],
+                                format_func=lambda k: ROT[k], key="op_fin_cmp_cr", disabled=not conj_f)
             xs = list(d.x)
             if len(xs) > 1:
                 p0, p1 = g1.select_slider("Prazo analisado", options=xs, value=(xs[max(0, len(xs) - 6)] if per == "Anual" else xs[max(0, len(xs) - 21)], xs[-1]),
@@ -1447,6 +1507,36 @@ with aba_op:
                                        "Ao ano (CAGR)": (b_ / a_) ** (1 / anos_j) - 1 if ok_ and i1 > i0 else np.nan})
                 except Exception as e:  # noqa: BLE001
                     st.caption(f"Macro indisponível: {e}")
+            # medianas do crescimento: crescimento de cada SPE primeiro, mediana depois
+            if conj_f:
+                bv = base_f[["id", "dt_fim", v_cr]].rename(columns={v_cr: "v"})
+                dts_j = [fins[x_] for x_ in janela]
+                if modo_f == "a/a":
+                    ant_ = bv.assign(dt_fim=bv.dt_fim + pd.DateOffset(years=1)).rename(columns={"v": "v0"})
+                    cr_ = bv.merge(ant_, on=["id", "dt_fim"], how="inner")
+                    cr_["y"] = np.where(cr_.v0 > 0, cr_.v / cr_.v0.where(cr_.v0 > 0) - 1, np.nan)
+                else:
+                    b0_ = bv[bv.dt_fim == fins[p0]].set_index("id").v
+                    cr_ = bv.assign(v0=bv.id.map(b0_))
+                    cr_["y"] = np.where(cr_.v0 > 0, 100 * cr_.v / cr_.v0.where(cr_.v0 > 0), np.nan)
+                cr_ = cr_[cr_.dt_fim.isin(dts_j)]
+                v_p0 = bv[bv.dt_fim == fins[p0]].set_index("id").v
+                v_p1 = bv[bv.dt_fim == fins[p1]].set_index("id").v
+                ac_ = (v_p1 / v_p0.where(v_p0 > 0) - 1).where(v_p1 > 0).dropna()
+                rotulo_v = ROT[v_cr].split(" (")[0]
+                for nome_, ids_, cor_, traco_ in conj_f:
+                    gb_ = cr_[cr_.id.isin(ids_)].groupby("dt_fim").y
+                    y_ = pd.Series([gb_.median().get(t_, np.nan) for t_ in dts_j], index=janela)
+                    n_ = [int(gb_.count().get(t_, 0)) for t_ in dts_j]
+                    if y_.notna().any():
+                        fig.add_trace(go.Scatter(x=janela, y=y_.values, mode="lines+markers", name=f"{nome_} ({rotulo_v})",
+                                                 line=dict(color=cor_, dash=traco_, width=2), marker=dict(size=5), customdata=n_,
+                                                 hovertemplate=("%{y:.1%}" if modo_f == "a/a" else "%{y:.1f}") + " · %{customdata} SPE(s)"))
+                    a_ids = ac_[ac_.index.isin(ids_)]
+                    if len(a_ids) and i1 > i0:
+                        med_ = a_ids.median()
+                        resumo.append({"Série": f"{nome_} ({rotulo_v})" + (f" · {len(a_ids)} SPEs" if len(ids_) > 1 else ""),
+                                       "Acumulado": med_, "Ao ano (CAGR)": (1 + med_) ** (1 / anos_j) - 1 if med_ > -1 else np.nan})
             if modo_f == "a/a":
                 fig.add_hline(y=0, line_dash="dot", line_color="gray")
             g2.plotly_chart(layout(fig, f"Crescimento {p0} → {p1} — " + ("contra o mesmo período do ano anterior" if modo_f == "a/a" else "acumulado (base 100 no início)"),
@@ -1454,10 +1544,13 @@ with aba_op:
             if resumo and i1 > i0:
                 g1.markdown(f"**{p0} → {p1}** ({anos_j:.1f} anos)")
                 g1.dataframe(pd.DataFrame(resumo), hide_index=True, width="stretch",
-                             column_config={"Acumulado": st.column_config.NumberColumn(format="percent"),
+                             column_config={"Série": st.column_config.TextColumn(width="large"),
+                                            "Acumulado": st.column_config.NumberColumn(format="percent"),
                                             "Ao ano (CAGR)": st.column_config.NumberColumn(format="percent")})
             g2.caption("Escolha o início e o fim na barra 'Prazo analisado'. Acumulado e CAGR comparam o nível do fim com o do "
-                       "início (cálculo próprio). Macro no mesmo recorte (12 meses até a data de fim): IPCA e R\\$/US\\$ pela média "
+                       "início (cálculo próprio). Medianas: crescimento de cada SPE primeiro (a/a contra o mesmo período do ano "
+                       "anterior; base 100 no início do prazo), mediana depois; só entram SPEs com valor positivo na base. Na "
+                       "tabela, mediana dos acumulados das SPEs com dado positivo nas duas pontas. Macro no mesmo recorte (12 meses até a data de fim): IPCA e R\\$/US\\$ pela média "
                        "do período; PIB nominal = volume (IBGE) × nível médio de preços (IPCA). R\\$/US\\$ positivo = real se "
                        "desvalorizou. Fonte macro: IBGE e BCB via Price Discovery Scanning.")
 
@@ -1468,13 +1561,8 @@ with aba_op:
                              go.Bar(x=d.x, y=d.ebitda_aj_pos_arrend, name="EBITDA aj. pós-arrendamento", opacity=0.75),
                              go.Bar(x=d.x, y=d.fco_comp_pos_arrend, name="FCO comparável pós-arrendamento", opacity=0.95)])
             k1.plotly_chart(layout(fig, "EBITDA ajustado e FCO (R$ mm)", h=380, x=True), width="stretch")
-            med_cv = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op)].groupby("dt_fim").conversao_fco.median()
-            med_gr = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op) & (fin.grupo == info["grupo"])].groupby("dt_fim").conversao_fco.median()
-            fig = go.Figure([go.Scatter(x=d.x, y=d.conversao_fco, name="Esta SPE", mode="lines+markers", line=dict(width=3)),
-                             go.Scatter(x=d.x, y=d.dt_fim.map(med_cv), name="Mediana — demais SPEs", mode="lines",
-                                        line=dict(color="#7f7f7f", dash="dash")),
-                             go.Scatter(x=d.x, y=d.dt_fim.map(med_gr), name=f"Mediana — grupo {info['grupo']}", mode="lines",
-                                        line=dict(color=COR_GRUPO.get(info["grupo"], "#9467bd"), dash="dot"))])
+            fig = go.Figure([go.Scatter(x=d.x, y=d.conversao_fco, name="Esta SPE", mode="lines+markers", line=dict(width=3))])
+            add_comp(fig, "conversao_fco", pct_=True)
             fig.add_hline(y=1, line_dash="dot", line_color="gray")
             k2.plotly_chart(layout(fig, "Conversão: FCO comp. pós-arrend. ÷ EBITDA aj. pós-arrend.", h=380, pct=True, x=True),
                             width="stretch")
@@ -1488,22 +1576,28 @@ with aba_op:
             # prazos, ciclo e perfil da dívida
             st.markdown("**Prazos, ciclo financeiro e perfil de vencimentos**")
             k1, k2 = st.columns(2)
-            pares_pz = fin[(fin.tipo == d.tipo.iloc[0]) & fin.dt_fim.isin(d.dt_fim) & (fin.id != op)]
-            med_pz = pares_pz.groupby("dt_fim")[["pmr_dias", "pmp_dias", "ciclo_financeiro_dias"]].median()
-            n_pz = pares_pz.groupby("dt_fim").pmr_dias.count()
+            v_pz = k1.selectbox("Prazo comparado", ["ciclo_financeiro_dias", "pmr_dias", "pmp_dias"],
+                                format_func=lambda k: ROT[k], key="op_fin_cmp_pz")
             fig = go.Figure()
-            for c_, cor_ in (("pmr_dias", "#1f77b4"), ("pmp_dias", "#ff7f0e"), ("ciclo_financeiro_dias", "#2ca02c")):
+            for c_, cor_ in (("pmr_dias", "#1f77b4"), ("pmp_dias", "#9467bd"), ("ciclo_financeiro_dias", "#2ca02c")):
                 fig.add_trace(go.Scatter(x=d.x, y=d[c_], name=ROT[c_], mode="lines+markers", line=dict(color=cor_, width=3)))
-                fig.add_trace(go.Scatter(x=d.x, y=d.dt_fim.map(med_pz[c_]), name=f"{ROT[c_].split(' (')[0]} — mediana das SPEs",
-                                         mode="lines", line=dict(color=cor_, dash="dash", width=1.5)))
-            k1.plotly_chart(layout(fig, "Prazos médios e ciclo financeiro (dias) vs. mediana das SPEs", h=400, x=True), width="stretch")
+            add_comp(fig, v_pz, sufixo=f" ({ROT[v_pz].split(' (')[0]})")
+            k1.plotly_chart(layout(fig, f"Prazos médios e ciclo financeiro (dias) — medianas: {ROT[v_pz].split(' (')[0]}", h=400, x=True),
+                            width="stretch")
+            k2.markdown("&nbsp;")
+            k2.caption("Linha (eixo da direita): % da dívida no curto prazo, com as medianas da comparação.")
             fig = go.Figure([go.Bar(x=d.x, y=d.divida_cp, name="Curto prazo (BP 2.01.04)"),
-                             go.Bar(x=d.x, y=d.divida_lp, name="Longo prazo (BP 2.02.01)")])
-            fig.update_layout(barmode="stack")
-            k2.plotly_chart(layout(fig, "Empréstimos e financiamentos: curto x longo prazo (R$ mm)", h=400, x=True), width="stretch")
+                             go.Bar(x=d.x, y=d.divida_lp, name="Longo prazo (BP 2.02.01)"),
+                             go.Scatter(x=d.x, y=d.pct_divida_cp, name="% no curto prazo (esta SPE)", yaxis="y2", mode="lines+markers",
+                                        line=dict(color="#d4a017", width=3))])
+            add_comp(fig, "pct_divida_cp", pct_=True, yaxis="y2", sufixo=" (% CP)")
+            fig.update_layout(barmode="stack", yaxis2=dict(overlaying="y", side="right", tickformat=".0%", showgrid=False,
+                                                           rangemode="tozero"))
+            k2.plotly_chart(layout(fig, "Empréstimos e financiamentos: curto x longo prazo (R$ mm) e % no curto prazo", h=400, x=True),
+                            width="stretch")
             st.caption("PMR = clientes ÷ receita líquida ajustada × dias; PMP = fornecedores ÷ custo (sem construção) × dias; "
-                       "ciclo financeiro = PMR − PMP (concessão não tem estoque relevante). Linhas tracejadas: mediana das demais "
-                       f"SPEs com DFP/ITR no mesmo período (até {int(n_pz.max()) if len(n_pz) else 0} SPEs). Cálculo próprio sobre a CVM.")
+                       "ciclo financeiro = PMR − PMP (concessão não tem estoque relevante). Tracejados: medianas da comparação "
+                       "escolhida no painel, para o prazo selecionado. Cálculo próprio sobre a CVM.")
             deb_o = deb[deb["id"] == op] if not deb.empty else pd.DataFrame()
             if len(deb_o):
                 cdo = custo_debentures(deb_o, pj)
@@ -1521,18 +1615,32 @@ with aba_op:
                 cd_all = custo_debentures(deb.drop_duplicates("codigo"), pj)
                 cd_all["grupo"] = cd_all["id"].map(cad.set_index("id").grupo)
                 cods = set(deb_o.codigo)
-                conjuntos = {"Esta SPE": cd_all[cd_all.codigo.isin(cods)],
-                             f"Demais SPEs do grupo {info['grupo']}": cd_all[(cd_all.grupo == info["grupo"]) & ~cd_all.codigo.isin(cods)],
-                             "Universo (concessionárias de rodovias)": cd_all}
-                tabs_c = []
-                for nome_c, dfc in conjuntos.items():
+                # conjuntos do painel de comparação (sem esta SPE); aqui ponderado pelo saldo, não mediana
+                ids_deb = {}
+                for k_ in meds_f:
+                    rot_c, _ids, _cor = op_med_f[k_]
+                    ids_deb[rot_c] = (set(cad[cad.grupo == info["grupo"]].id) if rot_c.startswith("Grupo")
+                                      else set(cad[cad.regiao == info["regiao"]].id) if rot_c.startswith("Região")
+                                      else set(cad.id), _cor)
+                if cesta_f:
+                    if cesta_modo_f == "Mediana da cesta":
+                        ids_deb[f"Cesta ({len(cesta_f)} SPEs)"] = (set(cesta_f), "#d62728")
+                    else:
+                        for j_, i_ in enumerate(cesta_f):
+                            ids_deb[nomes.get(i_, i_)] = ({i_}, PALETA[(j_ + 3) % len(PALETA)])
+                conjuntos = {"Esta SPE": (cd_all[cd_all.codigo.isin(cods)], "#1f77b4")}
+                for rot_c, (ids_c, cor_c) in ids_deb.items():
+                    conjuntos[rot_c] = (cd_all[cd_all["id"].isin(ids_c) & ~cd_all.codigo.isin(cods)], cor_c)
+                tabs_c, cores_c = [], []
+                for nome_c, (dfc, cor_c) in conjuntos.items():
                     if len(dfc):
                         r_c = resumo_custo(dfc)
-                        r_c.insert(0, "Conjunto", nome_c)
+                        r_c.insert(0, "Conjunto", nome_c + (f" · {dfc['id'].nunique()} SPEs" if nome_c != "Esta SPE" else ""))
                         tabs_c.append(r_c)
+                        cores_c.append(cor_c)
                 if tabs_c:
                     comp_d = pd.concat(tabs_c, ignore_index=True)
-                    st.markdown("**Remuneração da dívida: esta SPE vs. demais SPEs do grupo vs. universo** (debêntures, ponderado pelo saldo)")
+                    st.markdown("**Remuneração da dívida: esta SPE vs. conjuntos do painel de comparação** (debêntures, ponderado pelo saldo)")
                     q1, q2 = st.columns([1, 1.6])
                     med_d = q1.radio("Medida", ["Spread mercado s/ soberano (p.p.)", "Spread emissão s/ soberano (p.p.)",
                                                 "Custo nominal mercado (% a.a.)", "Custo nominal emissão (% a.a.)",
@@ -1541,13 +1649,14 @@ with aba_op:
                     g_d = comp_d[comp_d.Indexador != "Outros"].copy()
                     g_d["Indexador"] = g_d.Indexador.str.replace(" (nominal equivalente)", "", regex=False)
                     fig = px.bar(g_d, x="Indexador", y=med_d, color="Conjunto", barmode="group", text_auto=".2f",
-                                 color_discrete_sequence=["#1f77b4", COR_GRUPO.get(info["grupo"], "#9467bd"), "#7f7f7f"],
+                                 color_discrete_sequence=cores_c,
                                  labels={"Indexador": "", med_d: ""})
                     q2.plotly_chart(layout(fig, med_d, h=380), width="stretch")
                     q1.caption("Spreads por indexador: CDI+ = spread sobre o CDI; IPCA+ e prefixada = taxa − ETTJ ANBIMA no "
                                "mesmo prazo. 'Total' usa o custo nominal equivalente (todas as classes na curva de hoje). "
-                               f"Universo = todas as debêntures de SPEs com CNPJ na base ({cd_all.codigo.nunique()} papéis). "
-                               "Cálculo próprio.")
+                               f"Conjuntos = debêntures das demais SPEs de cada conjunto do painel (base: {cd_all.codigo.nunique()} "
+                               "papéis de SPEs com CNPJ); como as taxas dependem do saldo, aqui vale a média ponderada pelo saldo, "
+                               "não a mediana. Cálculo próprio.")
                     with st.expander("Tabela da comparação"):
                         st.dataframe(comp_d.round(2), hide_index=True, width="stretch")
 
@@ -1564,25 +1673,19 @@ with aba_op:
             # benchmark capex por VEQ e por km — todos os períodos
             metr_b = k2.selectbox("Indicador de capex", ["capex_por_veq", "capex_manut_por_veq", "capex_por_km", "capex_manut_por_km"],
                                   format_func=lambda k: ROT[k], key="op_bench")
-            base_b = fin[(fin.tipo == d.tipo.iloc[0]) & (fin.id != op)]
-
-            def _med(m_):
-                return base_b[m_].groupby("dt_fim")[metr_b].median()
-            series_b = [(f"Mediana — demais SPEs", _med(base_b.id.notna()), "#7f7f7f"),
-                        (f"Mediana — grupo {info['grupo']}", _med(base_b.grupo == info["grupo"]), COR_GRUPO.get(info["grupo"], "#9467bd")),
-                        (f"Mediana — região {REGIOES.get(info['regiao'], '')}", _med(base_b.regiao == info["regiao"]), "#2ca02c")]
             fig = go.Figure([go.Bar(x=d.x, y=d[metr_b], name="Esta SPE", marker_color="#1f77b4", opacity=0.85)])
-            for nome_b, s_b, cor_b in series_b:
-                fig.add_trace(go.Scatter(x=d.x, y=d.dt_fim.map(s_b), name=nome_b, mode="lines+markers",
-                                         line=dict(color=cor_b, dash="dash", width=2)))
-            k2.plotly_chart(layout(fig, f"{ROT[metr_b]} — SPE vs. medianas", h=380, x=True), width="stretch")
-            n_ult = base_b[base_b.dt_fim == d.dt_fim.max()][metr_b].notna().sum()
-            k2.caption(f"Medianas das demais SPEs com dado em cada período (no último, {n_ult} SPEs no total). Por veículo "
-                       "equivalente usa o tráfego do mesmo período; por km, a extensão do cadastro. Cálculo próprio.")
+            add_comp(fig, metr_b)
+            k2.plotly_chart(layout(fig, f"{ROT[metr_b]} — SPE vs. comparação", h=380, x=True), width="stretch")
+            k2.caption("Medianas/cesta do painel de comparação. Por veículo equivalente usa o tráfego do mesmo período; por "
+                       "km, a extensão do cadastro. Cálculo próprio.")
 
             # ICSD e alavancagem
             st.markdown("**ICSD e alavancagem**")
             k1, k2 = st.columns(2)
+            v_ic = k1.selectbox("ICSD comparado", ["icsd", "icsd_sem_manut", "icsd_arr", "icsd_arr_sem_manut"],
+                                format_func=lambda k: ROT[k], key="op_fin_cmp_icsd")
+            v_dl = k2.selectbox("Alavancagem comparada", ["dl_ebitda_aj_ifrs16", "dl_ebitda_aj_pre_ifrs16"],
+                                format_func=lambda k: ROT[k], key="op_fin_cmp_dl")
             AZ, LJ = "#2E6FBA", "#E69F00"
             fig = go.Figure([
                 go.Scatter(x=d.x, y=d.icsd, mode="lines+markers", name="(1) Regra geral — com capex de manutenção",
@@ -1599,6 +1702,7 @@ with aba_op:
             if len(mx_):
                 fig.add_trace(go.Scatter(x=mx_.x, y=mx_.icsd_arr, mode="markers", name="(2) com linha mista dívida + arrendamento",
                                          marker=dict(symbol="diamond-open", size=9, color="#C0504D", line=dict(width=1.5))))
+            add_comp(fig, v_ic, sufixo=" (" + ROT[v_ic].split(",")[0].replace("ICSD ", "") + ")")
             k1.plotly_chart(layout(fig, "ICSD (x)", x=True), width="stretch")
             k1.caption("(1) Regra geral = (EBITDA aj. − arrendamento − IR/CS pagos − capex de manutenção) ÷ (juros + principal da "
                        "dívida). (2) = (EBITDA aj. − IR/CS pagos − capex de manutenção) ÷ (juros + principal + arrendamento). "
@@ -1625,6 +1729,7 @@ with aba_op:
                     ". (Diagnóstico próprio a partir das linhas da DFC/BP na CVM.)")
             fig = go.Figure([go.Scatter(x=d.x, y=d.dl_ebitda_aj_ifrs16, mode="lines+markers", name="DL c/ arrend. ÷ EBITDA aj. (IFRS 16)"),
                              go.Scatter(x=d.x, y=d.dl_ebitda_aj_pre_ifrs16, mode="lines+markers", name="DL s/ arrend. ÷ EBITDA aj. pós-arrend. (pré-IFRS 16)")])
+            add_comp(fig, v_dl, sufixo=" (" + ("IFRS 16" if v_dl.endswith("ifrs16") and "pre" not in v_dl else "pré-IFRS 16") + ")")
             k2.plotly_chart(layout(fig, "Dívida líquida ÷ EBITDA ajustado (x)", x=True), width="stretch")
             st.caption("Alavancagem como no Price "
                        "Discovery Scanning: com arrendamento (IFRS 16) contra EBITDA ajustado; sem arrendamento contra EBITDA "
