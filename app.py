@@ -231,7 +231,7 @@ ARQ_TRACADOS = Path(__file__).resolve().parent / "geo" / "tracados.geojson"
 
 
 @st.cache_data(ttl=TTL, show_spinner=False)
-def tracados_oficiais() -> tuple[pd.DataFrame, str]:
+def tracados_oficiais(versao: tuple = ()) -> tuple[pd.DataFrame, str]:
     """Traçado de cada concessão (geo/tracados.geojson, gerado por scripts/gerar_tracados.py): federais = km dos
     trechos concedidos da ANTT cortados sobre a geometria do SNV/DNIT; SP = KMZ por lote da ARTESP; contratos
     encerrados e BRs delegadas a MG pelos critérios de geo/complementos_tracados.csv. Uma linha por polilinha."""
@@ -829,7 +829,9 @@ with aba_mapa:
     # SPEs sem praça georreferenciada: ponto aproximado do cadastro (sede/centro do trecho) — só quando não há traçado
     # oficial; com traçado (ex.: lotes ARTESP), a linha já localiza a SPE e o VEQ LTM vai no tooltip da linha
     tracado = st.checkbox("Mostrar traçado das rodovias", value=True, key="map_tracado")
-    tr_of, versao_snv = tracados_oficiais()
+    # a chave do cache inclui data/tamanho do arquivo: cada atualização do workflow aparece sem esperar o TTL
+    _st = ARQ_TRACADOS.stat() if ARQ_TRACADOS.exists() else None
+    tr_of, versao_snv = tracados_oficiais((_st.st_mtime_ns, _st.st_size) if _st else ())
     ids_tracado = set(tr_of.id_concessao) if (tracado and not tr_of.empty) else set()
     sem = sel[~sel.id.isin(com_praca) & ~sel.id.isin(ids_tracado)].copy()
     sem["latitude"], sem["longitude"] = pd.to_numeric(sem.lat, errors="coerce"), pd.to_numeric(sem.lon, errors="coerce")
