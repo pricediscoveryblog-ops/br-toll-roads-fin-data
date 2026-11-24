@@ -8,6 +8,8 @@ on:
     paths:
       - "scripts/gerar_tracados.py"
       - "geo/complementos_tracados.csv"
+      - "geo/der_mg_trechos.geojson"
+      - ".github/workflows/tracados.yml"
   schedule:
     - cron: "41 11 * * 1"   # segundas, 08:41 BRT (depois da coleta semanal do coletor)
 
@@ -38,4 +40,9 @@ jobs:
           git add geo/tracados.geojson
           if git diff --cached --quiet; then echo "sem mudança"; exit 0; fi
           git commit -q -m "geo: traçados das rodovias $(date -u +%Y-%m-%d)"
-          git push -q
+          # a main pode ter andado durante a execução (outro commit): rebase antes de enviar, com novas tentativas
+          for i in 1 2 3; do
+            git pull -q --rebase origin main && git push -q && exit 0
+            sleep 5
+          done
+          exit 1
