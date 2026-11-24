@@ -23,13 +23,12 @@ import re
 import sys
 import unicodedata
 import urllib.request
-import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
-from shapely.geometry import LineString, MultiLineString, mapping, shape
+from shapely.geometry import LineString, MultiLineString, shape
 from shapely.ops import linemerge, substring
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -140,26 +139,47 @@ def km_de(linhas: list[LineString]) -> float:
 
 
 # ------------------------------------------------------------------ ARTESP (KMZ por lote)
+RE_LINHA = re.compile(rb"<(?:[\w.-]+:)?LineString\b.*?</(?:[\w.-]+:)?LineString>", re.S)
+RE_COORD = re.compile(rb"<(?:[\w.-]+:)?coordinates[^>]*>(.*?)</(?:[\w.-]+:)?coordinates>", re.S)
+
+
 def linhas_kml(kml: bytes) -> list[LineString]:
-    """Extrai todas as LineString de um KML (tolerante a namespace e MultiGeometry)."""
-    raiz = ET.fromstring(kml)
+    """Extrai todas as LineString de um KML. Leitura por expressão regular, e não por parser XML, porque alguns
+    KMZ da ARTESP trazem prefixos de namespace não declarados (XML inválido para o parser)."""
     out = []
-    for el in raiz.iter():
-        if el.tag.split("}")[-1] != "LineString":
-            continue
-        for c in el.iter():
-            if c.tag.split("}")[-1] == "coordinates" and c.text:
-                pts = []
-                for tok in c.text.split():
-                    v = tok.split(",")
-                    if len(v) >= 2:
-                        try:
-                            pts.append((float(v[0]), float(v[1])))
-                        except ValueError:
-                            pass
-                if len(pts) >= 2:
-                    out.append(LineString(pts))
+    for bloco in RE_LINHA.findall(kml):
+        for txt in RE_COORD.findall(bloco):
+            pts = []
+            for tok in txt.split():
+                v = tok.split(b",")
+                if len(v) >= 2:
+                    try:
+                        pts.append((float(v[0]), float(v[1])))
+                    except ValueError:
+                        pass
+            if len(pts) >= 2:
+                out.append(LineString(pts))
     return out
+
+
+GRADE = 0.003     # ~300 m: as duas pistas, marginais e alças paralelas caem no mesmo nó
+MIN_LEN = 0.004   # descarta pedaços soltos < ~400 m (alças e dispositivos isolados)
+
+
+def consolidar(linhas: list[LineString]) -> list[LineString]:
+    """Os KMZ da ARTESP vêm em centenas de milhares de segmentos (pista a pista, alças, dispositivos). Para o mapa:
+    encaixa os vértices numa grade de ~300 m, remove arestas repetidas (pistas paralelas viram uma), junta e simplifica."""
+    arestas = set()
+    for ln in linhas:
+        pts = [(round(x / GRADE) * GRADE, round(y / GRADE) * GRADE) for x, y in ln.coords]
+        for a, b in zip(pts[:-1], pts[1:]):
+            if a != b:
+                arestas.add((a, b) if a < b else (b, a))
+    if not arestas:
+        return []
+    m = linemerge(MultiLineString([LineString(e) for e in arestas]))
+    geoms = [m] if m.geom_type == "LineString" else list(m.geoms)
+    return [g.simplify(GRADE * 0.8) for g in geoms if g.length >= MIN_LEN]
 
 
 def tracados_artesp(cad: pd.DataFrame, log: list) -> list[dict]:
@@ -196,11 +216,14 @@ def tracados_artesp(cad: pd.DataFrame, log: list) -> list[dict]:
         except Exception as e:  # noqa: BLE001
             log.append(f"ARTESP: falha em {nome_r} ({e})")
             continue
-        linhas = [ln.simplify(TOL) for ln in linhas if ln.length > 0]
+        n_bruto = len(linhas)
+        linhas = consolidar(linhas)
         if linhas:
-            feats.append(feature(lote, "Malha do lote (KMZ ARTESP)", "SP", None, None, linhas,
-                                 f"ARTESP - dados abertos, malha-rodoviaria: {nome_r}"))
-            log.append(f"ARTESP: {lote} <- {nome_r}: {len(linhas)} linhas, {km_de(linhas):.0f} km")
+            f = feature(lote, "Malha do lote (KMZ ARTESP)", "SP", None, None, linhas,
+                        f"ARTESP - dados abertos, malha-rodoviaria: {nome_r}")
+            f["properties"]["km_tracado"] = None   # inclui pistas/alças: não é a extensão do lote
+            feats.append(f)
+            log.append(f"ARTESP: {lote} <- {nome_r}: {n_bruto} segmentos -> {len(linhas)} linhas")
     return feats
 
 
