@@ -39,7 +39,7 @@ RAW = "https://raw.githubusercontent.com/pricediscoveryblog-ops/coletor-concesso
 URL_TRECHOS = os.environ.get("TRECHOS_URL", RAW + "dados/trechos_antt.parquet")
 URL_CADASTRO = os.environ.get("CADASTRO_URL", RAW + "main/cadastro/concessoes.csv")
 URL_SNV = os.environ.get(
-    "SNV_URL", "https://raw.githubusercontent.com/lucaasmeiraf/snv-geojson/main/GeoJSON%20-%20SNV_202604A.json")
+    "SNV_URL", "https://raw.githubusercontent.com/lucaasmeiraf/snv-geojson/master/GeoJSON%20-%20SNV_202604A.json")
 API_ARTESP = "https://dadosabertos.artesp.sp.gov.br/api/3/action/package_show?id=malha-rodoviaria"
 TOL = 0.0008       # simplificação (graus, ~90 m): mantém o desenho da via e deixa o arquivo leve
 CASAS = 5
