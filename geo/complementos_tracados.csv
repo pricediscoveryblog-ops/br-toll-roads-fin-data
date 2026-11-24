@@ -14,12 +14,9 @@ F-VBAHIA;snv;BR-324;BA;513.5;629.3;;Contrato encerrado (Via Bahia): BR-324 de Fe
 M-BR135;snv;BR-135;MG;363.6;673.8;Concessão Federal;BR-135 delegada a MG: de Montes Claros (ENTR BR-122/251/365) ao ENTR BR-040, segmentos de jurisdição estadual no SNV (aproximação, sem MG-231/LMG-754)
 M-TRI;snv;BR-452;MG;0;999;Concessão Federal;BR-452 delegada a MG: segmentos de jurisdição estadual no SNV (aproximação, rodovias estaduais do lote ainda não incluídas)
 M-TRI;snv;BR-365;MG;476.2;608.0;Concessão Federal;BR-365 em convênio federal/estadual no SNV (aproximação, rodovias estaduais do lote ainda não incluídas)
-M-MG050;dermg;MG-050;MG;57.6;402.0;;Sistema MG-050/BR-265/BR-491 (Via Nascentes): MG-050 km 57+600 a 402+000 (EIA/RIMA Nascentes das Gerais, BID Invest)
+M-MG050;dermg;MG-050;MG;57.6;402.0;;Sistema MG-050/BR-265/BR-491 (Via Nascentes, unificada com a antiga M-VNASC): MG-050 km 57+600 a 402+000 (EIA/RIMA Nascentes das Gerais, BID Invest)
 M-MG050;snv;BR-491;MG;0;4.7;;Sistema MG-050: BR-491 km 0 a 4+700, contorno de São Sebastião do Paraíso (EIA/RIMA, BID Invest)
 M-MG050;snv;BR-265;MG;637.2;659.5;;Sistema MG-050: BR-265 km 637+200 a 659+500, até a divisa MG/SP (EIA/RIMA, BID Invest)
-M-VNASC;dermg;MG-050;MG;57.6;402.0;;Via Nascentes = concessionária atual do Sistema MG-050/BR-265/BR-491 (Agência Minas): mesmo traçado de M-MG050
-M-VNASC;snv;BR-491;MG;0;4.7;;Via Nascentes: BR-491 km 0 a 4+700
-M-VNASC;snv;BR-265;MG;637.2;659.5;;Via Nascentes: BR-265 km 637+200 a 659+500
 M-SUL;dermg;CMG-146;MG;611.6;646.7;;Lote Sul de Minas (Agência Minas, 03/03/2023): MGC-146 km 611,60 a 646,70 (Poços de Caldas-Andradas)
 M-SUL;dermg;MG-173;MG;0;19.9;;Lote Sul de Minas: MG-173 km 0,00 a 52,10, exceto km 19,90-21,70 (municipal)
 M-SUL;dermg;MG-173;MG;21.7;52.1;;Lote Sul de Minas: MG-173 km 0,00 a 52,10, exceto km 19,90-21,70 (municipal)
