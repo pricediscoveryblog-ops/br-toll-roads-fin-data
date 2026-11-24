@@ -2079,23 +2079,6 @@ with aba_comp:
                                color_discrete_map=COR_GRUPO if cor_s == "grupo" else None,
                                labels={x: ROT.get(x, x), y: ROT.get(y, y)}), width="stretch")
 
-    st.markdown("**Tráfego base 100**")
-    escolha = st.multiselect("SPEs", comp.id.tolist(), format_func=lambda i: nomes.get(i, i),
-                             default=comp.sort_values("veic_eq_ltm", ascending=False).id.head(5).tolist())
-    if escolha:
-        b = traf[traf.id_concessao.isin(escolha)].groupby(["id_concessao", "mes"], as_index=False).veic_eq.sum()
-        b["ltm"] = b.groupby("id_concessao").veic_eq.transform(lambda s: s.rolling(12).sum())
-        b = b.dropna(subset=["ltm"])
-        if len(b):
-            inicio = st.slider("Início da base", min_value=b.mes.min().to_pydatetime(), max_value=b.mes.max().to_pydatetime(),
-                               value=max(b.mes.min(), b.mes.max() - pd.DateOffset(years=5)).to_pydatetime(), format="MM/YYYY")
-            b = b[b.mes >= inicio]
-            b["base100"] = b.groupby("id_concessao").ltm.transform(lambda s: s / s.iloc[0] * 100)
-            b["SPE"] = b.id_concessao.map(nomes)
-            st.plotly_chart(px.line(b, x="mes", y="base100", color="SPE", labels={"mes": "", "base100": "LTM, base 100"}),
-                            width="stretch")
-            st.caption("Série LTM (12 meses acumulados) para neutralizar sazonalidade.")
-
 # ================================================================== juros
 with aba_jur:
     if pj.empty:
