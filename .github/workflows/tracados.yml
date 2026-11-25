@@ -1,7 +1,7 @@
 name: tracados-rodovias
 
 # Regenera geo/tracados.geojson (traçado das concessões para o mapa):
-# SNV/DNIT x trechos ANTT (federais) + KMZ por lote da ARTESP (SP).
+# SNV/DNIT x trechos ANTT (federais) + SRE do DER-PR (estaduais dos lotes do PR) + KMZ por lote da ARTESP (SP).
 on:
   workflow_dispatch:
   push:
@@ -38,6 +38,8 @@ jobs:
           git config user.name "tracados-bot"
           git config user.email "tracados-bot@users.noreply.github.com"
           git add geo/tracados.geojson
+          # cópia de reserva do SRE do DER-PR (usada se o GeoServer do Paraná falhar numa execução futura)
+          if [ -f geo/der_pr_trechos.geojson ]; then git add geo/der_pr_trechos.geojson; fi
           if git diff --cached --quiet; then echo "sem mudança"; exit 0; fi
           git commit -q -m "geo: traçados das rodovias $(date -u +%Y-%m-%d)"
           # a main pode ter andado durante a execução (outro commit): rebase antes de enviar, com novas tentativas
