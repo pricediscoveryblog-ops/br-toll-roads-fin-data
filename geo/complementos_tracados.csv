@@ -45,3 +45,5 @@ F-LITPIO;snvaux;277APR1;PR;0;2.9;;Acesso BR-277 1 (ANTT Outros, km 0 a 2,9): seg
 F-LITPIO;snvaux;277APR2;PR;0;8.1;;Acesso BR-277 2 (ANTT Outros, km 0 a 8,138): segmentos 277APR2005 e 2010 do SNV (Acesso Oeste de Paranaguá até o porto)
 F-VARAU;snvaux;277APR4;PR;0;5.3;;Acesso BR-277 (ANTT Outros, km 0 a 5,3): segmento 277APR4005 do SNV (Acesso Oeste de Curitiba, ENTR PR-418 à ponte do Rio Barigui)
 F-VCAMPO;derpr;PR-158;PR;200.8;206.34;;Contorno Peabiru (ANTT Outros, km 0 a 6,2): PR-158 km 200,8 a 206,34 no SRE do DER-PR (trechos 158S0100/0110PRC, coincidentes com o contorno 317C0240/0245 de Peabiru, 5,5 km) - atribuição por nome de local, cálculo próprio
+F-RACO;ignorar;BR-393;RJ;101.9;166.6;;ANTT km 101,9 a 166,6, mas no SNV o km 101,9 a 105,3 cai no trecho estadual junto à divisa RJ/MG de Pirapetinga (43 km a leste, fora do traçado da concessão)
+F-RACO;snv;BR-393;RJ;105.3;166.6;;Rodovia do Aço: BR-393 da divisa MG/RJ em Além Paraíba (km 105,3 do SNV) ao km 166,6 da ANTT (aproximação: o km 101,9 da ANTT não corresponde ao início do eixo no SNV, cálculo próprio)
