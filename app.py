@@ -869,9 +869,11 @@ ROT = {"veic_eq": "Veículos equivalentes", "receita_aj": "Receita líquida ajus
        "pct_divida_cp": "% da dívida no curto prazo", "fco_comp_pos_arrend": "FCO comparável pós-arrendamento (R$ mm)",
        "conversao_fco": "Conversão: FCO comp. pós-arrend. ÷ EBITDA aj. pós-arrend.", "veic_eq_ltm": "Veíc. eq. LTM", "cresc_ltm": "Crescimento LTM",
        "cresc_ltm_mesmas_pracas": "Crescimento LTM (mesmas praças)", "cagr_3a": "CAGR 3 anos", "pct_pesados": "% pesados",
-       "vdm_eq_por_km": "VDM eq. por km", "pior_queda_anual": "Pior queda anual", "pracas_novas_ltm": "Praças novas LTM"}
+       "vdm_eq_por_km": "VDM eq. por km", "pior_queda_anual": "Pior queda anual", "pracas_novas_ltm": "Praças novas LTM",
+       "pct_prazo_restante": "% do prazo contratual a transcorrer", "anos_restantes": "Anos de contrato a transcorrer"}
 PCT = {"margem_ebitda_aj", "custo_implicito", "pct_divida_cp", "cresc_ltm", "cresc_ltm_mesmas_pracas", "cagr_3a",
-       "pct_pesados", "pior_queda_anual", "margem_ebitda_aj_pos_arrend", "conversao_fco"}
+       "pct_pesados", "pior_queda_anual", "margem_ebitda_aj_pos_arrend", "conversao_fco",
+       "pct_prazo_restante"}
 
 
 # ================================================================== dados
@@ -2120,8 +2122,65 @@ with aba_comp:
         base_all["periodo_fin"] = base_all.id.map(uf_["periodo_fin"])
         for c_ in num_f:
             base_all[c_] = base_all.id.map(uf_[c_])
+
+    # ---------- coorte por prazo contratual relativo a transcorrer (% do prazo vigente que ainda falta)
+    prz_c = PRZ.drop_duplicates("id").set_index("id")
+    vig_c = prz_c.vigente.astype(bool)
+    pct_rest = (1 - prz_c.pct_decorrido).where(vig_c)
+    anos_rest = prz_c.anos_restantes.where(vig_c)
+    base_all["pct_prazo_restante"] = base_all.id.map(pct_rest)
+    base_all["anos_restantes"] = base_all.id.map(anos_rest)
+    with st.container(border=True):
+        st.markdown("**Prazo contratual a transcorrer** — restringe toda a aba (ranking, medianas, evolução e percentis)")
+        pz1, pz2, pz3 = st.columns([1.5, 1.2, 1.6])
+        modo_pz = pz1.radio("Comparar", ["Todas as SPEs", "Mesma faixa de prazo a transcorrer", "Prazo parecido com uma SPE"],
+                            key="cmp_pz_modo")
+        base_pz = pz2.radio("Medida", ["% do prazo total", "Anos restantes"], key="cmp_pz_base",
+                            disabled=modo_pz == "Todas as SPEs",
+                            help="% do prazo total = (término − hoje) ÷ (término − início do prazo vigente). Anos restantes "
+                                 "= término − hoje. Só contratos vigentes com prazo cadastrado.")
+        col_pz = "pct_prazo_restante" if base_pz.startswith("%") else "anos_restantes"
+        ids_pz = None
+        if modo_pz == "Mesma faixa de prazo a transcorrer":
+            if col_pz == "pct_prazo_restante":
+                a_, b_ = pz3.slider("Faixa (% do prazo a transcorrer)", 0, 100, (40, 70), step=5, key="cmp_pz_faixa_pct")
+                a_, b_ = a_ / 100, b_ / 100
+            else:
+                mx_ = int(np.ceil(np.nanmax([base_all.anos_restantes.max(), 1])))
+                a_, b_ = pz3.slider("Faixa (anos a transcorrer)", 0, mx_, (min(10, mx_), min(20, mx_)), key="cmp_pz_faixa_anos")
+            ids_pz = base_all.loc[base_all[col_pz].between(a_, b_), "id"]
+        elif modo_pz == "Prazo parecido com uma SPE":
+            cand_ = base_all.dropna(subset=[col_pz]).sort_values("nome")
+            ref_pz = pz3.selectbox("SPE de referência", list(cand_.id), key="cmp_pz_ref",
+                                   format_func=lambda i: (f"{nomes.get(i, i)} — " + (
+                                       f"{cand_.set_index('id').at[i, 'pct_prazo_restante']:.0%} a transcorrer"
+                                       if col_pz == "pct_prazo_restante" else
+                                       f"{cand_.set_index('id').at[i, 'anos_restantes']:.1f} anos".replace(".", ","))))
+            if col_pz == "pct_prazo_restante":
+                tol_ = pz3.number_input("Tolerância (± pontos percentuais)", 1, 50, 10, step=1, key="cmp_pz_tol_pct") / 100
+            else:
+                tol_ = pz3.number_input("Tolerância (± anos)", 0.5, 20.0, 3.0, step=0.5, key="cmp_pz_tol_anos")
+            if ref_pz is not None:
+                v_ref = cand_.set_index("id").at[ref_pz, col_pz]
+                ids_pz = base_all.loc[(base_all[col_pz] - v_ref).abs() <= tol_ + 1e-9, "id"]
+                a_, b_ = v_ref - tol_, v_ref + tol_
+        if ids_pz is not None:
+            n_sem = int(base_all[col_pz].isna().sum())
+            base_all = base_all[base_all.id.isin(ids_pz)].copy()
+            fx_ = (f"{max(a_, 0):.0%} a {min(b_, 1):.0%} do prazo" if col_pz == "pct_prazo_restante"
+                   else f"{max(a_, 0):.1f} a {b_:.1f} anos".replace(".", ","))
+            st.caption(f"Coorte: {len(base_all)} SPEs com {fx_} a transcorrer (hoje, {HOJE:%d/%m/%Y}). "
+                       f"{n_sem} contratos ficam fora por estarem encerrados ou sem prazo cadastrado. As medianas de "
+                       "referência e os percentis passam a ser calculados só dentro desta coorte. Cálculo próprio sobre "
+                       "datas da curadoria (ANTT, ARTESP, Agência Minas/FRE).")
+            if base_all.empty:
+                st.warning("Nenhuma SPE nessa faixa de prazo — amplie a faixa ou a tolerância.")
+    # seleção individual guardada que saiu da coorte: limpa antes de desenhar o widget
+    if "cmp_spes" in st.session_state:
+        st.session_state["cmp_spes"] = [i_ for i_ in st.session_state["cmp_spes"] if i_ in set(base_all.id)]
     comp = base_all[base_all.id.isin(sel.id)].copy()
     num = num_t + ([c_ for c_ in num_f if c_ in comp] if not fin.empty else [])
+    num += ["pct_prazo_restante", "anos_restantes"]
     CHAVES = {"grupo": "Grupo controlador", "regiao_nome": "Região", "uf_principal": "UF", "agencia": "Agência",
               "(todas)": "Todas as SPEs"}
     ids_ord = sorted(base_all.id, key=lambda i: nomes.get(i, i))
@@ -2237,7 +2296,7 @@ with aba_comp:
         longo.columns = ["data", "id", "v"]
     else:
         longo = fin[fin.tipo == tp][["dt_fim", "id", ind_h]].rename(columns={"dt_fim": "data", ind_h: "v"})
-    longo = longo.dropna(subset=["v"]).merge(base_all[ATR], on="id", how="left")
+    longo = longo.dropna(subset=["v"]).merge(base_all[ATR], on="id", how="left" if ids_pz is None else "inner")
     datas = sorted(longo.data.unique())
     if len(datas) < 2:
         st.info("Sem histórico suficiente para este indicador.")
