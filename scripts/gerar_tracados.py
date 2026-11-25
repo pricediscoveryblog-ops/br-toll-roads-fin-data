@@ -160,7 +160,8 @@ def pista_esquerda(trecho: str) -> bool:
 def der_pr(rods: set[str], log: list) -> SNV | None:
     """SRE do DER-PR como base no mesmo esquema do SNV: chave (rodovia, 'PR'), km inicial/final por trecho. Fica só o
     eixo das rodovias estaduais (inclui trechos coincidentes com BR, municipais e não pavimentados no meio do eixo);
-    saem a pista esquerda dos duplicados e os acessos/contornos/travessias/variantes das BRs (códigos ###[ACUV]PR)."""
+    saem a pista esquerda dos duplicados, os acessos/contornos/travessias/variantes das BRs (códigos ###[ACUV]PR) e os
+    trechos coincidentes com BR (###BPR), que usam a quilometragem da BR e se sobrepõem aos km da rodovia estadual."""
     gd = None
     try:
         bruto = json.loads(baixar(URL_DER_PR, timeout=300))
@@ -198,7 +199,7 @@ def der_pr(rods: set[str], log: list) -> SNV | None:
             log.append(f"DER-PR: WFS indisponível ({e}) e sem cópia; estaduais do PR sem traçado")
             return None
     sel = [f for f in gd["features"] if not pista_esquerda(f["properties"]["trecho"])
-           and not re.match(r"^\d{3}[ACUV]PR", f["properties"]["trecho"])]
+           and not re.match(r"^\d{3}[ABCUV]PR", f["properties"]["trecho"])]
     return SNV({"features": [{"geometry": f["geometry"], "properties": {
         "vl_br": str(f["properties"]["rod_num"]).zfill(3), "sg_uf": "PR", "vl_km_inic": f["properties"]["km_inicial"],
         "vl_km_fina": f["properties"]["km_final"], "sg_tipo_tr": "B", "ds_tipo_ad": f["properties"].get("tipojuris", ""),
