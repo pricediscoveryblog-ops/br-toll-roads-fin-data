@@ -298,10 +298,13 @@ def trafego_mensal() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=TTL, show_spinner=False)
-def ltm_por_spe() -> pd.DataFrame:
+def ltm_por_spe(ate: str | None = None) -> pd.DataFrame:
     """Veíc. equivalentes em 12 meses acumulados: linhas = mês (calendário completo), colunas = SPE. Mês sem dado
-    publicado fica vazio e derruba as somas de 12 meses que o contêm (não completa lacuna)."""
+    publicado fica vazio e derruba as somas de 12 meses que o contêm (não completa lacuna). `ate` = mês de referência
+    escolhido na barra lateral (AAAA-MM-DD): meses posteriores ficam fora."""
     t = trafego_mensal()
+    if ate:
+        t = t[t.mes <= pd.Timestamp(ate)]
     if t.empty:
         return pd.DataFrame()
     p = t.groupby(["mes", "id_concessao"]).veic_eq.sum().unstack()
@@ -310,10 +313,12 @@ def ltm_por_spe() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=TTL, show_spinner=False)
-def series_trafego() -> dict:
+def series_trafego(ate: str | None = None) -> dict:
     """Séries mensais por SPE (colunas) dos indicadores de tráfego da aba Comparar, no calendário completo (mês sem
-    dado derruba as somas de 12 meses que o contêm)."""
+    dado derruba as somas de 12 meses que o contêm). `ate` = mês de referência da barra lateral."""
     t = trafego_mensal()
+    if ate:
+        t = t[t.mes <= pd.Timestamp(ate)]
     if t.empty:
         return {}
     p = t.groupby(["mes", "id_concessao"])[["veic_eq", "veic_total", "veic_pesado"]].sum()
@@ -871,12 +876,11 @@ PCT = {"margem_ebitda_aj", "custo_implicito", "pct_divida_cp", "cresc_ltm", "cre
 
 # ================================================================== dados
 cad = ler_cadastro()
-traf = trafego_mensal()
-if cad.empty or traf.empty:
+traf_total = trafego_mensal()
+if cad.empty or traf_total.empty:
     st.error("Não foi possível carregar os dados do coletor. Tente novamente em alguns minutos.")
     st.stop()
-met = metricas(cad, traf)
-fin = financeiro(cad, traf)
+fin = financeiro(cad, traf_total)   # tráfego casado com as datas de fim de cada DFP/ITR (independe do mês escolhido)
 spe_cvm = ler_fin("spe_cvm")
 nomes = dict(zip(cad.id, cad.nome))
 GRUPOS = sorted(cad.grupo.unique(), key=lambda g: (g == SEM_GRUPO, g))
@@ -887,9 +891,35 @@ PRZ = tabela_prazos(cad, fin, HOJE)
 
 # ================================================================== barra lateral
 st.sidebar.title("🛣️ BR Toll Roads Fin Data")
-st.sidebar.caption(f"Tráfego até {traf.mes.max():%m/%Y} · {len(cad)} contratos no cadastro · "
+st.sidebar.caption(f"Tráfego até {traf_total.mes.max():%m/%Y} · {len(cad)} contratos no cadastro · "
                    + (f"financeiro CVM de {fin['id'].nunique()} SPEs (último período {fin['dt_fim'].max():%m/%Y})"
                       if not fin.empty else "financeiro CVM ainda não coletado"))
+# mês de referência do tráfego: fim da janela dos últimos 12 meses (LTM) em todo o app
+_meses_ref = [f"{d:%Y-%m-%d}" for d in pd.date_range(end=traf_total.mes.max(), periods=36, freq="MS")[::-1]]
+_ult_por_spe = traf_total.groupby("id_concessao").mes.max()
+
+
+def _rot_ref(d):
+    d = pd.Timestamp(d)
+    n = int((_ult_por_spe >= d).sum())
+    return (f"{d:%m/%Y}" + (" · fim de trimestre" if d.month in (3, 6, 9, 12) else "")
+            + f" · {n} de {len(_ult_por_spe)} SPEs com série até este mês")
+
+
+REF = st.sidebar.selectbox(
+    "Mês de referência do tráfego (fim dos últimos 12 meses)", _meses_ref, index=0, format_func=_rot_ref,
+    key="ref_trafego",
+    help="Define o último mês da janela de 12 meses (LTM) do tráfego em todas as abas; meses posteriores ficam fora. "
+         "Meses fora do fim de trimestre (mar/jun/set/dez) não casam com o LTM do ITR da CVM, e nem toda fonte publica "
+         "no mesmo ritmo (ANTT costuma sair antes da ARTESP). Os gráficos trimestrais seguem sempre trimestres de "
+         "calendário (mar/jun/set/dez) e só mostram trimestres completos.")
+REF_ATE = REF
+REF = pd.Timestamp(REF)
+traf = traf_total[traf_total.mes <= REF]
+met = metricas(cad, traf)
+_atras = met[met.ultimo_mes.notna() & (met.ultimo_mes < REF)]
+if REF.month not in (3, 6, 9, 12):
+    st.sidebar.caption(f"⚠️ {REF:%m/%Y} não é fim de trimestre: o LTM do tráfego não casa com o LTM do último ITR.")
 st.sidebar.header("Filtros")
 f_ag = st.sidebar.multiselect("Agência", sorted(cad.agencia.unique()), default=sorted(cad.agencia.unique()))
 f_reg = st.sidebar.multiselect("Região", list(REGIOES.values()), default=list(REGIOES.values()))
@@ -900,9 +930,14 @@ sel = met[met.agencia.isin(f_ag) & met.regiao_nome.isin(f_reg)]
 if f_gr:
     sel = sel[sel.grupo.isin(f_gr)]
 if so_ativas:
-    corte = traf.mes.max() - pd.DateOffset(months=12)
+    corte = REF - pd.DateOffset(months=12)
     sel = sel[(sel.ultimo_mes > corte) | sel.ultimo_mes.isna()]
 st.sidebar.caption(f"{len(sel)} SPEs no filtro")
+_atras_sel = _atras[_atras.id.isin(sel.id) & (_atras.ultimo_mes > REF - pd.DateOffset(months=12))]
+if len(_atras_sel):
+    st.sidebar.caption(f"{len(_atras_sel)} SPE(s) do filtro sem dado em {REF:%m/%Y} — nas métricas por SPE, o LTM delas "
+                       "vai até o último mês publicado; nos consolidados com janela única, ficam fora: "
+                       + ", ".join(f"{n} ({d:%m/%Y})" for n, d in zip(_atras_sel.nome, _atras_sel.ultimo_mes)) + ".")
 st.sidebar.markdown("---")
 st.sidebar.caption("Price Discovery · dados abertos ANTT, ARTESP, CVM, SND, ANBIMA, IBGE e BCB. "
                    "Grupo marcado 'validar' vem de conhecimento prévio, ainda sem documento.")
@@ -925,10 +960,11 @@ with aba_mapa:
     c[0].metric("SPEs no filtro", len(sel))
     c[1].metric("Veíc. equivalentes LTM (mi)", f"{sel.veic_eq_ltm.sum() / 1e6:,.0f}")
     c[2].metric("Grupos", sel.grupo.nunique())
-    c[3].metric("Último mês com dado", traf.mes.max().strftime("%m/%Y"))
+    c[3].metric("Mês de referência do tráfego", REF.strftime("%m/%Y"),
+                f"último publicado {traf_total.mes.max():%m/%Y}", delta_color="off")
     pr = ler("pracas_antt")
     pontos = []
-    ltm_praca = traf[traf.mes > traf.mes.max() - pd.DateOffset(months=12)].groupby(["id_concessao", "praca"]).veic_eq.sum()
+    ltm_praca = traf[traf.mes > REF - pd.DateOffset(months=12)].groupby(["id_concessao", "praca"]).veic_eq.sum()
     com_praca = set()
     if not pr.empty:
         pr = pr[pr.id_concessao.isin(sel.id) & pr.latitude.notna()].merge(
@@ -1122,7 +1158,7 @@ with aba_mapa:
     ta = ta[ta.ano >= ta.ano.max() - 9] if len(ta) else ta
     ta["periodo_x"], ta["ordem"] = ta.ano.astype(str), ta.ano.astype(float)
     rot_ltm_tr = None
-    mes_max = traf.mes.max()
+    mes_max = REF
     if com_ltm and mes_max.month != 12:
         jan = tr[tr.mes > mes_max - pd.DateOffset(months=12)]
         nm = jan.groupby("id_concessao").mes.nunique()
@@ -1366,7 +1402,7 @@ with aba_op:
         if len(g) < 2:
             st.info("Menos de 13 meses de tráfego publicados: sem série de crescimento em 12 meses acumulados.")
         else:
-            L = ltm_por_spe()
+            L = ltm_por_spe(REF_ATE)
             outras = [c_ for c_ in L.columns if c_ != op]
             ids_gr = [] if info["grupo"] == SEM_GRUPO else [i for i in cad[cad.grupo == info["grupo"]].id if i in outras]
             ids_rg = [i for i in cad[cad.regiao == info["regiao"]].id if i in outras]
@@ -2063,7 +2099,8 @@ with aba_op:
 
 # ================================================================== comparar
 with aba_comp:
-    st.markdown("Métricas de tráfego calculadas sobre ANTT/ARTESP (LTM = últimos 12 meses com dado da SPE) e "
+    st.markdown(f"Métricas de tráfego calculadas sobre ANTT/ARTESP (LTM = 12 meses até {REF:%m/%Y}, mês de referência "
+                "da barra lateral, ou até o último mês com dado da SPE, se anterior) e "
                 "financeiras sobre a CVM (último período escolhido). Cálculo próprio.")
     per_c = st.radio("Financeiro", ["Último LTM", "Último exercício"], horizontal=True, key="cmp_per")
     num_t = ["veic_eq_ltm", "cresc_ltm", "cresc_ltm_mesmas_pracas", "pracas_novas_ltm", "cagr_3a", "pct_pesados",
@@ -2182,7 +2219,7 @@ with aba_comp:
 
     # ---------- evolução no tempo, horizonte selecionável
     st.subheader("Evolução no tempo")
-    ser_t = series_trafego()
+    ser_t = series_trafego(REF_ATE)
     num_h = [c_ for c_ in ["veic_eq_ltm", "cresc_ltm", "cagr_3a", "pct_pesados", "vdm_eq_por_km"] if c_ in ser_t or c_ == "vdm_eq_por_km"] + \
             ([c_ for c_ in num_f if c_ in fin] if not fin.empty else [])
     h1, h2, h3 = st.columns([2, 1.3, 1.2])
