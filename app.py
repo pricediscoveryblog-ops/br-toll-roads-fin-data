@@ -166,6 +166,18 @@ def ler_acionistas_curadoria() -> pd.DataFrame:
     return _ler_arquivo(BASE_CAD + "acionistas.csv", "csv", sep=";", dtype=str, keep_default_na=False)
 
 
+@st.cache_data(ttl=TTL)
+def ler_prazos() -> pd.DataFrame:
+    """Prazos contratuais (curadoria em cadastro/prazos.csv do coletor: ANTT, ARTESP e Agência Minas/FRE)."""
+    p = _ler_arquivo(BASE_CAD + "prazos.csv", "csv", sep=";", dtype=str, keep_default_na=False)
+    if p.empty:
+        return p
+    for c_ in ("inicio_concessao", "inicio_prazo_vigente", "termino_contratual"):
+        p[c_] = pd.to_datetime(p[c_].replace("", None), errors="coerce")
+    p["prazo_anos"] = pd.to_numeric(p["prazo_anos"], errors="coerce")
+    return p
+
+
 @st.cache_data(ttl=TTL, show_spinner=False)
 def pasta_pds(sub: str, arquivos: tuple) -> str:
     """Baixa as séries do Price Discovery Scanning (macro/juros) para uma pasta local (o módulo macro_aba lê arquivos)."""
@@ -782,6 +794,47 @@ def fmt_pct(v, casas=1) -> str:
     return "-" if pd.isna(v) else f"{v * 100:.{casas}f}%".replace(".", ",")
 
 
+def fmt_anos(v) -> str:
+    return "-" if v is None or pd.isna(v) else f"{v:,.1f} anos".replace(".", ",")
+
+
+def fmt_data_prazo(d, precisao="dia") -> str:
+    if d is None or pd.isna(d):
+        return "-"
+    return f"{d:%m/%Y}" if precisao == "mês" else f"{d:%d/%m/%Y}"
+
+
+def tabela_prazos(cad_: pd.DataFrame, fin_: pd.DataFrame, hoje: pd.Timestamp) -> pd.DataFrame:
+    """Uma linha por contrato do cadastro: datas, tempo restante (anos) e EBITDA aj. do último exercício (peso)."""
+    pz = ler_prazos()
+    base = cad_[["id", "nome", "grupo", "agencia", "regiao_nome"]].copy() if "regiao_nome" in cad_ else cad_[["id", "nome", "grupo", "agencia"]].copy()
+    if pz.empty:
+        return base.assign(situacao="", anos_restantes=np.nan, vigente=False)
+    t_ = base.merge(pz, on="id", how="left")
+    t_["inicio_prazo"] = t_.inicio_prazo_vigente.fillna(t_.inicio_concessao)
+    t_["vigente"] = (t_.situacao == "vigente") & t_.termino_contratual.notna() & (t_.termino_contratual > hoje)
+    t_["anos_restantes"] = np.where(t_.vigente, (t_.termino_contratual - hoje).dt.days / 365.25,
+                                    np.where(t_.situacao.isin(["encerrado", "sucedida"]), 0.0, np.nan))
+    dur = (t_.termino_contratual - t_.inicio_prazo).dt.days
+    t_["pct_decorrido"] = ((hoje - t_.inicio_prazo).dt.days / dur.where(dur > 0)).clip(0, 1)
+    if not fin_.empty:
+        ua_ = fin_[fin_.tipo == "anual"].sort_values("exercicio").groupby("id").tail(1)[["id", "exercicio", "ebitda_aj"]]
+        t_ = t_.merge(ua_.rename(columns={"exercicio": "exercicio_ebitda"}), on="id", how="left")
+    else:
+        t_["exercicio_ebitda"], t_["ebitda_aj"] = np.nan, np.nan
+    return t_
+
+
+def medias_prazo(t_: pd.DataFrame) -> dict:
+    """Média simples e ponderada pelo EBITDA aj. (só EBITDA > 0) do tempo restante dos contratos vigentes em t_."""
+    v = t_[t_.vigente]
+    w = v.ebitda_aj.where(v.ebitda_aj > 0)
+    ok = w.notna()
+    return {"n": len(v), "simples": v.anos_restantes.mean() if len(v) else np.nan,
+            "ponderada": float(np.average(v.anos_restantes[ok], weights=w[ok])) if ok.any() else np.nan,
+            "n_pond": int(ok.sum())}
+
+
 def layout(fig, titulo, h=360, pct=False, x=False):
     fig.update_layout(title=titulo, height=h, legend=dict(orientation="h", y=-0.22), margin=dict(t=45, b=10, l=10, r=10))
     if pct:
@@ -829,6 +882,8 @@ nomes = dict(zip(cad.id, cad.nome))
 GRUPOS = sorted(cad.grupo.unique(), key=lambda g: (g == SEM_GRUPO, g))
 COR_GRUPO = {g: PALETA[i % len(PALETA)] for i, g in enumerate(GRUPOS)}
 COR_GRUPO[SEM_GRUPO] = "#B0B0B0"
+HOJE = pd.Timestamp.today().normalize()
+PRZ = tabela_prazos(cad, fin, HOJE)
 
 # ================================================================== barra lateral
 st.sidebar.title("🛣️ BR Toll Roads Fin Data")
@@ -967,6 +1022,64 @@ with aba_mapa:
         notas = [NOTA_TRACADO[i] for i in NOTA_TRACADO if i in set(sel.id)]
         if tracado and notas:
             st.caption("⚠ **Traçados a validar** — " + " ".join(notas))
+
+    # ---- prazo das concessões dos grupos selecionados
+    if f_gr and "situacao" in PRZ and PRZ.situacao.ne("").any():
+        st.subheader("Prazo das concessões dos grupos selecionados")
+        pg = PRZ[PRZ.grupo.isin(f_gr)]
+        linhas = []
+        for g_ in [g_ for g_ in f_gr if g_ != SEM_GRUPO]:
+            tg_ = pg[pg.grupo == g_]
+            md = medias_prazo(tg_)
+            vg = tg_[tg_.vigente]
+            linhas.append({"Grupo": g_, "Contratos vigentes": md["n"],
+                           "Tempo restante — média simples (anos)": md["simples"],
+                           "Tempo restante — média ponderada pelo EBITDA (anos)": md["ponderada"],
+                           "SPEs com EBITDA > 0 na ponderação": md["n_pond"],
+                           "Término mais próximo": (f"{vg.termino_contratual.min():%m/%Y} ({vg.loc[vg.termino_contratual.idxmin(), 'nome']})" if len(vg) else "-"),
+                           "Término mais distante": (f"{vg.termino_contratual.max():%m/%Y} ({vg.loc[vg.termino_contratual.idxmax(), 'nome']})" if len(vg) else "-"),
+                           "Encerrados/sucedidos": int(tg_.situacao.isin(["encerrado", "sucedida"]).sum())})
+        rg = pd.DataFrame(linhas)
+        if SEM_GRUPO in f_gr:
+            st.caption(f"'{SEM_GRUPO}' não é um grupo econômico: fica fora das médias (os contratos aparecem na linha do tempo).")
+        if len(rg) == 1:
+            r0 = rg.iloc[0]
+            q = st.columns(4)
+            q[0].metric("Contratos vigentes", int(r0["Contratos vigentes"]))
+            q[1].metric("Tempo restante médio (simples)", fmt_anos(r0["Tempo restante — média simples (anos)"]))
+            q[2].metric("Tempo restante médio (pond. EBITDA)", fmt_anos(r0["Tempo restante — média ponderada pelo EBITDA (anos)"]),
+                        help="Pesos = EBITDA ajustado do último exercício (DFP) de cada SPE vigente; SPEs sem DFP ou com "
+                             "EBITDA ≤ 0 ficam fora da ponderação.")
+            q[3].metric("Término mais próximo", r0["Término mais próximo"].split(" (")[0],
+                        help=r0["Término mais próximo"])
+        if len(rg):
+            st.dataframe(rg, hide_index=True, width="stretch",
+                         column_config={c_: st.column_config.NumberColumn(format="%.1f") for c_ in rg.columns if "(anos)" in c_})
+        tl = pg[pg.inicio_prazo.notna() & pg.termino_contratual.notna()].copy()
+        if len(tl):
+            tl["Situação"] = np.where(tl.vigente, "vigente", tl.situacao)
+            tl["restante_txt"] = tl.anos_restantes.map(fmt_anos)
+            tl = tl.sort_values(["grupo", "termino_contratual"])
+            fig = px.timeline(tl, x_start="inicio_prazo", x_end="termino_contratual", y="nome", color="grupo",
+                              color_discrete_map=COR_GRUPO, pattern_shape="Situação",
+                              pattern_shape_map={"vigente": "", "encerrado": "/", "sucedida": "/"},
+                              hover_data={"restante_txt": True, "Situação": True, "inicio_prazo": "|%d/%m/%Y",
+                                          "termino_contratual": "|%d/%m/%Y"},
+                              labels={"nome": "", "grupo": "Grupo", "restante_txt": "Tempo restante",
+                                      "inicio_prazo": "Início do prazo", "termino_contratual": "Término"})
+            fig.update_yaxes(categoryorder="array", categoryarray=tl.nome.tolist()[::-1])
+            fig.add_vline(x=HOJE.timestamp() * 1000, line_dash="dot", line_color="#d62728")
+            fig.add_annotation(x=HOJE, y=1, yref="paper", text="hoje", showarrow=False, font=dict(color="#d62728"),
+                               yanchor="bottom")
+            st.plotly_chart(layout(fig, "Linha do tempo dos contratos (início do prazo vigente → término contratual)",
+                                   h=max(320, 28 * len(tl) + 120)), width="stretch")
+        st.caption("Início = assinatura do termo de arrolamento e transferência de bens / assunção do sistema (ANTT: "
+                   "'Início da Concessão'; ARTESP: mês de início; MG: autorização de início da operação). Nos contratos "
+                   "modernizados por aditivo, o prazo vigente conta da data do aditivo. Término contratual = início do prazo "
+                   "+ prazo (ou data informada pelo regulador/companhia quando houve prorrogação). Contratos encerrados ou "
+                   "sucedidos entram com zero e ficam fora das médias. Considera todas as SPEs do grupo no cadastro, não só as "
+                   "do filtro de agência/região. Fontes: ANTT, ARTESP, Agência Minas e FRE (curadoria em cadastro/prazos.csv "
+                   "do coletor); médias e ponderação = cálculo próprio.")
 
     # ---- consolidado (gráficos)
     st.subheader("Consolidado das SPEs no filtro")
@@ -1133,6 +1246,32 @@ with aba_op:
     if "PPP" in str(info["modalidade"]):
         st.warning("Concessão patrocinada (PPP): contraprestação do poder concedente muda a contabilidade (ativo "
                    "financeiro/de contrato) e as métricas de receita e capex — comparar com concessões comuns com cautela.")
+
+    # ---- contrato: início (termo de arrolamento), prazo, término e tempo restante
+    st.markdown("### Contrato de concessão")
+    pz_op = PRZ.set_index("id").loc[op] if ("situacao" in PRZ and op in set(PRZ.id)) else None
+    if pz_op is None or not str(pz_op.get("situacao", "") or ""):
+        st.caption("Prazo contratual ainda não cadastrado para esta SPE.")
+    else:
+        prec = pz_op.precisao_inicio or "dia"
+        tem_adit = pd.notna(pz_op.inicio_prazo_vigente)
+        q = st.columns(4)
+        q[0].metric("Início da concessão", fmt_data_prazo(pz_op.inicio_concessao, prec),
+                    help="Assinatura do termo de arrolamento e transferência de bens / assunção do sistema rodoviário.")
+        q[1].metric("Prazo", (f"{int(pz_op.prazo_anos)} anos" if pd.notna(pz_op.prazo_anos) else "-"),
+                    help=(f"Prazo contado do aditivo de modernização de {pz_op.inicio_prazo_vigente:%d/%m/%Y}." if tem_adit
+                          else "Prazo contratual vigente (com aditivos, quando o regulador já o informa assim)."))
+        q[2].metric("Término contratual", fmt_data_prazo(pz_op.termino_contratual, "dia" if prec == "dia" or pd.notna(pz_op.inicio_prazo_vigente) else "mês"))
+        if pz_op.vigente:
+            q[3].metric("Tempo restante", fmt_anos(pz_op.anos_restantes))
+        else:
+            q[3].metric("Tempo restante", {"encerrado": "Encerrado", "sucedida": "Sucedida", "a iniciar": "A iniciar"}.get(pz_op.situacao, "-"))
+        if pd.notna(pz_op.pct_decorrido):
+            st.progress(float(pz_op.pct_decorrido), text=f"{pz_op.pct_decorrido:.0%} do prazo"
+                        + (" vigente (desde o aditivo)" if tem_adit else "") + " decorrido")
+        st.caption(f"Fonte: {pz_op.fonte}." + (f" {pz_op.obs}" if pz_op.obs else "")
+                   + (" Início com precisão de mês (dia 1 assumido no cálculo)." if prec == "mês" else "")
+                   + " Tempo restante = término − hoje (cálculo próprio).")
 
     t = traf[traf.id_concessao == op]
     m = pd.DataFrame()
@@ -1851,6 +1990,60 @@ with aba_op:
                 st.dataframe(tab_f, hide_index=True, width="stretch")
                 baixar_botao(tab_f, f"financeiro_{op}_{d.tipo.iloc[0]}")
 
+    # ---- tempo restante da SPE x demais SPEs do grupo (média simples e ponderada pelo EBITDA)
+    if pz_op is not None and str(pz_op.get("situacao", "") or "") and info["grupo"] != SEM_GRUPO:
+        st.markdown(f"**Tempo restante da concessão x grupo {info['grupo']}**")
+        tg_ = PRZ[PRZ.grupo == info["grupo"]]
+        dem = tg_[tg_.id != op]
+        md_d, md_g = medias_prazo(dem), medias_prazo(tg_)
+        if md_d["n"] == 0:
+            st.caption("O grupo não tem outro contrato vigente com prazo cadastrado para comparar.")
+        else:
+            esta = pz_op.anos_restantes if pz_op.vigente else np.nan
+            q = st.columns(4)
+            st_txt = {"encerrado": "Encerrado", "sucedida": "Sucedida", "a iniciar": "A iniciar"}.get(pz_op.situacao, "-")
+            q[0].metric("Esta SPE", fmt_anos(esta) if pz_op.vigente else st_txt)
+            dl = (lambda ref: None if pd.isna(esta) or pd.isna(ref) else f"{esta - ref:+.1f} anos (SPE − média)".replace(".", ","))
+            q[1].metric(f"Média simples — demais ({md_d['n']})", fmt_anos(md_d["simples"]), delta=dl(md_d["simples"]),
+                        delta_color="off")
+            q[2].metric(f"Média pond. EBITDA — demais ({md_d['n_pond']})", fmt_anos(md_d["ponderada"]),
+                        delta=dl(md_d["ponderada"]), delta_color="off")
+            q[3].metric(f"Média pond. EBITDA — grupo todo ({md_g['n_pond']})", fmt_anos(md_g["ponderada"]),
+                        delta=dl(md_g["ponderada"]), delta_color="off",
+                        help="Inclui esta SPE: é a 'duration' contratual do portfólio do grupo ponderada pela geração de caixa.")
+            vg = tg_[tg_.vigente].sort_values("anos_restantes")
+            if len(vg):
+                cores_v = ["#d62728" if i_ == op else COR_GRUPO.get(info["grupo"], "#1f77b4") for i_ in vg.id]
+                fig = go.Figure(go.Bar(x=vg.anos_restantes, y=vg.nome, orientation="h", marker_color=cores_v,
+                                       text=vg.anos_restantes.map(lambda v: f"{v:.1f}".replace(".", ",")), textposition="outside",
+                                       customdata=np.stack([vg.termino_contratual.dt.strftime("%d/%m/%Y"),
+                                                            vg.ebitda_aj.map(lambda v: "-" if pd.isna(v) else f"{v:,.0f}")], axis=-1),
+                                       hovertemplate="%{y}<br>Restante: %{x:.1f} anos<br>Término: %{customdata[0]}"
+                                                     "<br>EBITDA aj. último exercício (R$ mm): %{customdata[1]}<extra></extra>"))
+                for nm_, v_, cor_, tr_ in (("Média simples (demais)", md_d["simples"], "#7f7f7f", "dot"),
+                                           ("Média pond. EBITDA (demais)", md_d["ponderada"], "#2ca02c", "dash")):
+                    if pd.notna(v_):
+                        fig.add_vline(x=v_, line_dash=tr_, line_color=cor_)
+                        fig.add_trace(go.Scatter(x=[v_, v_], y=[None, None], mode="lines", name=f"{nm_}: {v_:.1f} anos".replace(".", ","),
+                                                 line=dict(color=cor_, dash=tr_)))
+                fig.update_layout(showlegend=True)
+                st.plotly_chart(layout(fig, f"Tempo restante dos contratos vigentes do grupo (anos; em vermelho: {info['nome']})",
+                                       h=max(300, 32 * len(vg) + 120)), width="stretch")
+            st.caption("Demais = contratos vigentes do grupo no cadastro, exceto esta SPE. Pesos da média ponderada = EBITDA "
+                       "ajustado do último exercício (DFP) de cada SPE; SPEs sem registro na CVM/sem DFP ou com EBITDA ≤ 0 ficam "
+                       "fora da ponderação (entram na média simples). Contratos encerrados, sucedidos ou a iniciar ficam fora "
+                       "das médias. Cálculo próprio sobre prazos da ANTT/ARTESP/Agência Minas.")
+            with st.expander("Prazos das SPEs do grupo"):
+                tb_ = tg_[["nome", "situacao", "inicio_concessao", "prazo_anos", "inicio_prazo_vigente", "termino_contratual",
+                           "anos_restantes", "ebitda_aj", "exercicio_ebitda", "fonte"]].sort_values("termino_contratual")
+                st.dataframe(tb_, hide_index=True, width="stretch",
+                             column_config={"inicio_concessao": st.column_config.DateColumn("Início", format="DD/MM/YYYY"),
+                                            "inicio_prazo_vigente": st.column_config.DateColumn("Início do prazo (aditivo)", format="DD/MM/YYYY"),
+                                            "termino_contratual": st.column_config.DateColumn("Término", format="DD/MM/YYYY"),
+                                            "anos_restantes": st.column_config.NumberColumn("Restante (anos)", format="%.1f"),
+                                            "ebitda_aj": st.column_config.NumberColumn("EBITDA aj. (R$ mm)", format="%.1f"),
+                                            "exercicio_ebitda": st.column_config.NumberColumn("Exercício", format="%d")})
+
     # ---- dados econômicos ANTT (reportados ao regulador)
     if not t.empty and t.fonte.iloc[0] == "ANTT":
         rec, cus, inv = anual_antt("receita_pedagio"), anual_antt("custos_operacionais"), anual_antt("investimentos")
@@ -2166,6 +2359,12 @@ Acionistas: Formulário de Referência (posição acionária) e curadoria. Juros
 - *DL/EBITDA*: com arrendamento ÷ EBITDA ajustado (IFRS 16) e sem arrendamento ÷ EBITDA ajustado pós-arrendamento.
 - *Custo da dívida*: debêntures ponderadas pelo saldo (emissão = escritura; mercado = taxa indicativa ANBIMA), spread
   sobre o soberano no mesmo prazo; custo implícito = juros pagos ÷ dívida bruta média (toda a dívida, regime de caixa).
+
+**Prazos contratuais (curadoria).** Início = assinatura do termo de arrolamento e transferência de bens / assunção do
+sistema (ANTT: "Início da Concessão"; ARTESP: mês de início; MG: autorização de início da operação ou FRE). Contratos
+federais modernizados por aditivo contam o prazo novo a partir do aditivo. Término = início do prazo + prazo, ou a data
+divulgada quando houve prorrogação. Tempo restante = término − hoje; médias do grupo simples e ponderadas pelo EBITDA
+ajustado do último exercício (cálculo próprio).
 
 **Limites.** SPEs sem registro na CVM não têm financeiro. Consolidados por grupo somam SPEs (sem holding, sem
 eliminações). PPPs (concessão patrocinada) têm contabilidade diferente e entram com aviso. Grupo e acionistas marcados
