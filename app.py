@@ -1224,23 +1224,41 @@ with aba_mapa:
     else:
         chave = ["periodo_x", "ordem", "grupo"] + (["nome"] if por_spe else [])
         g = src.groupby(chave, as_index=False)[var_p].sum(min_count=1).dropna(subset=[var_p])
-        tot = g.groupby(["periodo_x", "grupo"] if por_spe else ["periodo_x"])[var_p].transform("sum")
+        n_gr = g.grupo.nunique() if por_spe else 1
+        modo_part = "grupo"
+        if por_spe and n_gr > 1:
+            modo_part = st.radio("Com mais de um grupo", ["Um gráfico por grupo", "Consolidar os grupos selecionados"],
+                                 horizontal=True, key="map_part_modo",
+                                 help="Um gráfico por grupo: % de cada SPE no total do próprio grupo. Consolidar: soma "
+                                      "todas as SPEs dos grupos selecionados e mostra o % de cada SPE nesse total.")
+            modo_part = "grupo" if modo_part.startswith("Um") else "todos"
+        tot = g.groupby(["periodo_x", "grupo"] if por_spe and modo_part == "grupo" else ["periodo_x"])[var_p].transform("sum")
         g["part"] = g[var_p] / tot.where(tot > 0)
         g = g.dropna(subset=["part"])
-        n_gr = g.grupo.nunique() if por_spe else 1
-        fig = px.bar(g, x="periodo_x", y="part", color=cor, color_discrete_map=COR_GRUPO if cor == "grupo" else None,
-                     facet_row="grupo" if por_spe and n_gr > 1 else None, text_auto=".0%",
-                     category_orders={"periodo_x": ordem_x(g)}, labels={"periodo_x": "", "part": "", cor: "", "grupo": ""},
-                     hover_data={var_p: ":,.0f", "part": ":.1%"})
-        fig.update_traces(textposition="inside", insidetextanchor="middle", textfont_size=10)
-        fig = layout(fig, f"{ROT[var_p]}: participação " + ("de cada SPE no total do grupo" if por_spe else
-                                                            "de cada grupo no total do filtro"),
-                     h=max(420, 300 * n_gr), pct=True, x=True)
-        fig.update_layout(barmode="stack", uniformtext_minsize=9, uniformtext_mode="hide")
-        st.plotly_chart(fig, width="stretch")
+
+        def grafico_part(d_, titulo_):
+            f_ = px.bar(d_, x="periodo_x", y="part", color=cor, color_discrete_map=COR_GRUPO if cor == "grupo" else None,
+                        text_auto=".0%", category_orders={"periodo_x": ordem_x(d_)},
+                        labels={"periodo_x": "", "part": "", cor: "", "grupo": ""},
+                        hover_data={var_p: ":,.0f", "part": ":.1%", "grupo": True})
+            f_.update_traces(textposition="inside", insidetextanchor="middle", textfont_size=10)
+            f_ = layout(f_, titulo_, h=420, pct=True, x=True)
+            f_.update_layout(barmode="stack", uniformtext_minsize=9, uniformtext_mode="hide")
+            st.plotly_chart(f_, width="stretch")
+
+        if not por_spe:
+            grafico_part(g, f"{ROT[var_p]}: participação de cada grupo no total do filtro")
+        elif modo_part == "todos":
+            grafico_part(g, f"{ROT[var_p]}: participação de cada SPE no total dos grupos selecionados "
+                            f"({', '.join(sorted(g.grupo.unique()))})")
+        else:
+            for gr_ in sorted(g.grupo.unique()):
+                grafico_part(g[g.grupo == gr_], f"{ROT[var_p]}: participação de cada SPE no total do grupo {gr_}")
         st.caption("Cada barra soma 100% do período (SPEs com dado no período: DFP nos anos fechados; ITR no LTM; "
                    "tráfego com 12 meses completos). Períodos em que o total é zero ou negativo (possível na dívida "
-                   "líquida) ficam de fora; SPE com valor negativo aparece abaixo de zero.")
+                   "líquida) ficam de fora; SPE com valor negativo aparece abaixo de zero."
+                   + (" Consolidado = soma simples das SPEs dos grupos selecionados (não é o consolidado contábil)."
+                      if modo_part == "todos" else ""))
         with st.expander("Tabela da participação"):
             tb = g.pivot_table(index=["grupo", "nome"] if por_spe else "grupo", columns="periodo_x", values="part")
             tb = tb[[c_ for c_ in ordem_x(g) if c_ in tb.columns]].reset_index()
