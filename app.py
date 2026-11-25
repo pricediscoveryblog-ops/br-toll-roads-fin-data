@@ -2309,7 +2309,13 @@ with aba_comp:
         lj = longo[(longo.data >= t0) & (longo.data <= t1)].copy()
         base100 = modo_h.startswith("Base") and not (ind_h in PCT or ind_h in ("cresc_ltm", "cagr_3a"))
         fig = go.Figure()
-        spes_h = escolha_c or []
+        ids_rk = list(rk.id) if len(rk) else []
+        linhas_h = st.radio("SPEs no gráfico", ["Mesmas do gráfico acima", "Nenhuma (só medianas)"],
+                            horizontal=True, key="cmp_hist_spes",
+                            help=f"Hoje: {len(ids_rk)} SPEs. Mesmas SPEs do ranking por indicador: respeitam o filtro da barra lateral, o prazo "
+                                 "contratual a transcorrer, a seleção individual e o 'Mostrar (0 = todas)'.")
+        spes_h = ids_rk if linhas_h.startswith("Mesmas") else []
+        larg_h = 3 if len(spes_h) <= 8 else (2 if len(spes_h) <= 20 else 1.4)
         for j_, i_ in enumerate(spes_h):
             s_ = lj[lj.id == i_].sort_values("data")
             if base100 and len(s_):
@@ -2317,7 +2323,7 @@ with aba_comp:
                 s_ = s_.assign(v=100 * s_.v / b0) if b0 > 0 else s_.iloc[0:0]
             if len(s_):
                 fig.add_trace(go.Scatter(x=s_.data, y=s_.v, mode="lines" if eh_traf else "lines+markers", name=nomes.get(i_, i_),
-                                         line=dict(width=3, color=PALETA[j_ % len(PALETA)])))
+                                         line=dict(width=larg_h, color=PALETA[j_ % len(PALETA)])))
         cats_h = base_all[base_all.id.isin(spes_h)] if spes_h else comp
         tracos = ["dash", "dot", "dashdot", "longdash", "longdashdot"]
         for kk, k_ in enumerate(refs):
@@ -2338,7 +2344,7 @@ with aba_comp:
                                                    color=PALETA[(jj + 3 * kk + len(spes_h)) % len(PALETA)]),
                                          customdata=med_["count"], hovertemplate="%{y:,.3g} · %{customdata} SPEs<extra></extra>"))
         if not fig.data:
-            st.info("Escolha SPEs ou medianas de referência acima para ver a evolução.")
+            st.info("Nenhuma SPE com histórico e nenhuma mediana de referência escolhida — ajuste as seleções acima.")
         else:
             if ind_h in PCT or ind_h in ("cresc_ltm", "cagr_3a"):
                 fig.update_yaxes(tickformat=".0%")
@@ -2346,7 +2352,8 @@ with aba_comp:
                 fig.add_hline(y=0, line_dash="dot", line_color="gray")
             st.plotly_chart(layout(fig, f"{ROT.get(ind_h, ind_h)} — {d0} a {d1}" + (" (base 100 no início)" if base100 else ""),
                                    h=440), width="stretch")
-        st.caption("Linhas cheias = SPEs escolhidas na caixa acima; tracejadas = medianas de referência (todas as SPEs da "
+        st.caption("Linhas cheias = as mesmas SPEs do gráfico por indicador acima (seleção individual, ou todas as do filtro e da "
+                   "faixa de prazo, limitadas pelo 'Mostrar'); tracejadas = medianas de referência (todas as SPEs da "
                    "base com dado em cada data; sem SPE escolhida, usa as categorias das SPEs do filtro). O número de SPEs "
                    "na mediana muda com o tempo (contratos que entram e saem) — passe o mouse. Base 100: cada SPE é "
                    "rebaseada no primeiro dado dentro do horizonte e a mediana vem depois. Cálculo próprio.")
