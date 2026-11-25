@@ -36,3 +36,12 @@ M-VCAFE;dermg;CMG-369;MG;124.4;188.5;;Lote Vias do Café: CMG-369 km 124,40 a 18
 M-VLIB;snv;BR-356;MG;27.8;111.1;;Lote Via Liberdade (briefing Min. Transportes): BR-356 km 27,8 a 111,1
 M-VLIB;dermg;MG-262;MG;0;72.8;;Lote Via Liberdade: trecho de 72,8 km do ENTR MG-329 ao ENTR MG-129 (Mariana) - na base do DER-MG é a MG-262 km 0-73,3 (atribuição por nome de local, cálculo próprio)
 M-VLIB;dermg;MG-329;MG;100.5;134.5;;Lote Via Liberdade: trecho de 34 km a partir do ENTR BR-262 - MG-329 km 100,5 a 134,5 (atribuição por nome de local, cálculo próprio)
+F-EPRPR;snvaux;376CPR1;PR;0;17.3;;Contorno Norte de Maringá (ANTT Outros, km 0 a 17,3): segmentos 376CPR1005 a 1030 do SNV (contorno da BR-376, mesma quilometragem)
+F-EPRPR;snvaux;376UPR2;PR;0;1.5;;Travessia Urbana BR-376/PR (ANTT Outros, km 0 a 1,5): segmento 376UPR2005 do SNV (travessia de Mandaguari, até o ENTR PR-444)
+F-MOTPR;ignorar;BR-376;PR;8.6;10.0;;ANTT lista BR-376 km 8,6 a 10,0, mas esse km no eixo principal do SNV fica no início da BR-376 (noroeste do PR, fora do lote) - o trecho é o 376UPR2015 do SNV (travessia de Mandaguari, Concessão Federal, km 8,6 a 10,0)
+F-MOTPR;snvaux;376UPR2;PR;8.6;10.0;;Travessia de Mandaguari (ANTT BR-376 km 8,6 a 10,0): segmento 376UPR2015 do SNV (ACESSO SUL MANDAGUARI, Concessão Federal)
+F-EPRIGU;snvaux;277APR5;PR;0;15.2;;Acesso 1 BR-277 (ANTT Outros, km 0 a 15,021): segmentos 277APR5005 a 5020 do SNV (Perimetral Leste de Foz do Iguaçu até a 2ª ponte Brasil-Paraguai, 15,2 km) - atribuição por extensão e descrição, cálculo próprio
+F-LITPIO;snvaux;277APR1;PR;0;2.9;;Acesso BR-277 1 (ANTT Outros, km 0 a 2,9): segmento 277APR1005 do SNV (acesso ao Porto de Paranaguá)
+F-LITPIO;snvaux;277APR2;PR;0;8.1;;Acesso BR-277 2 (ANTT Outros, km 0 a 8,138): segmentos 277APR2005 e 2010 do SNV (Acesso Oeste de Paranaguá até o porto)
+F-VARAU;snvaux;277APR4;PR;0;5.3;;Acesso BR-277 (ANTT Outros, km 0 a 5,3): segmento 277APR4005 do SNV (Acesso Oeste de Curitiba, ENTR PR-418 à ponte do Rio Barigui)
+F-VCAMPO;derpr;PR-158;PR;200.8;206.34;;Contorno Peabiru (ANTT Outros, km 0 a 6,2): PR-158 km 200,8 a 206,34 no SRE do DER-PR (trechos 158S0100/0110PRC, coincidentes com o contorno 317C0240/0245 de Peabiru, 5,5 km) - atribuição por nome de local, cálculo próprio
