@@ -953,8 +953,10 @@ with aba_mapa:
         sem_tr = sel[~sel.id.isin(com_tracado)].nome if tracado else pd.Series(dtype=str)
         st.caption("Divisas e siglas dos estados: GeoJSON público (click_that_hood), simplificado. "
                    f"Traçado das federais: km inicial/final de cada trecho concedido (ANTT, dados abertos) cortado sobre a "
-                   f"geometria do SNV {versao_snv} do DNIT — só a pista principal das BRs (acessos e rodovias estaduais "
-                   "dos lotes do PR não estão no SNV). SP: malha de cada lote nos KMZ da ARTESP (dados abertos). Contratos "
+                   f"geometria do SNV {versao_snv} do DNIT (pista principal das BRs). Lotes do PR: rodovias estaduais "
+                   "delegadas (PR-xxx) pelos km da ANTT sobre o Sistema Rodoviário Estadual do DER-PR (GeoServer do "
+                   "Paraná/GeoDER); contornos, acessos e travessias pelos segmentos auxiliares do SNV (critério em "
+                   "geo/complementos_tracados.csv). SP: malha de cada lote nos KMZ da ARTESP (dados abertos). Contratos "
                    "federais encerrados e BRs delegadas a MG: mesmo trecho da sucessora ou pelas descrições de local do SNV "
                    "(critério em geo/complementos_tracados.csv — cálculo próprio). Sem traçado oficial, a linha liga as "
                    "praças na ordem do km (aproximação). Círculos = praças federais (coordenadas da ANTT), tamanho = veículos "
