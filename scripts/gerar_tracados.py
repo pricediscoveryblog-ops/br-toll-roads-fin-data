@@ -5,10 +5,17 @@ Fontes (todas públicas):
   coletor-concessoes/dados/trechos_antt.parquet: rodovia, UF, km inicial e final de cada SPE) cortados sobre a
   geometria do SNV do DNIT (Sistema Nacional de Viação, segmentos com km inicial/final). Por padrão lê o GeoJSON do
   SNV 202604A espelhado em github.com/lucaasmeiraf/snv-geojson (cópia do arquivo do DNIT); `SNV_URL` troca a fonte.
+- Rodovias estaduais dos lotes do PR (PR-xxx delegadas à União, linhas "Estadual" da ANTT): km da ANTT cortados sobre o
+  SRE do DER-PR (camada der:sistema_rodoviario_lin_p31982 do GeoServer do Paraná, a mesma do GeoDER, com código do
+  trecho e km inicial/final). Baixada a cada execução; se o GeoServer falhar, usa a cópia geo/der_pr_trechos.geojson.
+- Contornos, acessos e travessias federais dos lotes do PR (linhas "Outros" da ANTT): segmentos auxiliares do SNV
+  (código do trecho, ex. 376CPR1 = Contorno Norte de Maringá), pelos critérios de geo/complementos_tracados.csv.
 - Contratos federais encerrados, BRs delegadas a MG e lotes estaduais de MG (Artemig): geo/complementos_tracados.csv
   (critério e fonte por linha). Coluna `base`: `snv` corta o SNV/DNIT; `dermg` corta a malha estadual do DER-MG
   (geo/der_mg_trechos.geojson, cópia da camada IDE:ide_0401_mg_rodovias_lin da IDE-Sisema, mesmo esquema do SNV com
-  código SRE e km inicial/final por segmento).
+  código SRE e km inicial/final por segmento); `derpr` corta o SRE do DER-PR; `snvaux` corta os segmentos auxiliares do
+  SNV (contornos/acessos/travessias/variantes) cujo código começa pelo prefixo da coluna `rodovia`; `ignorar` descarta
+  um trecho federal da ANTT cujo km não corresponde ao eixo principal da BR no SNV (substituído por outra linha).
 - SP (ARTESP): KMZ oficiais por lote do dataset "malha-rodoviaria" do portal de dados abertos da ARTESP.
   O portal só é acessível de redes abertas (GitHub Actions); se falhar, os lotes de SP ficam de fora e o app usa o
   ponto aproximado do cadastro.
@@ -38,6 +45,11 @@ RAIZ = Path(__file__).resolve().parents[1]
 SAIDA = RAIZ / "geo" / "tracados.geojson"
 COMPLEMENTOS = RAIZ / "geo" / "complementos_tracados.csv"
 DER_MG = RAIZ / "geo" / "der_mg_trechos.geojson"   # cópia da camada do DER-MG (IDE-Sisema) com as estaduais dos lotes
+DER_PR = RAIZ / "geo" / "der_pr_trechos.geojson"   # cópia (só as rodovias usadas) do SRE do DER-PR, reserva se o WFS cair
+URL_DER_PR = os.environ.get(
+    "DER_PR_URL", "https://geoserver.pr.gov.br/geoserver/ows?service=wfs&version=2.0.0&request=GetFeature"
+    "&typeNames=der:sistema_rodoviario_lin_p31982&outputFormat=application/json&srsName=EPSG:4674")
+AUX_TIPO = {"A": "acesso", "C": "contorno", "U": "travessia urbana", "V": "variante"}
 RAW = "https://raw.githubusercontent.com/pricediscoveryblog-ops/coletor-concessoes/"
 URL_TRECHOS = os.environ.get("TRECHOS_URL", RAW + "dados/trechos_antt.parquet")
 URL_CADASTRO = os.environ.get("CADASTRO_URL", RAW + "main/cadastro/concessoes.csv")
@@ -83,15 +95,20 @@ class SNV:
                 m = linemerge(g)
                 g = m if m.geom_type == "LineString" else max(m.geoms, key=lambda x: x.length)
             self.versao = p.get("versao_snv", self.versao)
+            ini = (p["xi"], p["yi"]) if p.get("xi") is not None and p.get("yi") is not None else None
             por_chave[(str(p["vl_br"]).zfill(3), p["sg_uf"])].append(
                 {"ki": float(p["vl_km_inic"]), "kf": float(p["vl_km_fina"]), "tipo": p.get("sg_tipo_tr", "B"),
-                 "adm": p.get("ds_tipo_ad", ""), "cod": p.get("vl_codigo", ""), "g": g})
+                 "adm": p.get("ds_tipo_ad", ""), "cod": p.get("vl_codigo", ""), "g": g, "ini": ini})
         # orienta cada segmento do eixo principal pelo vizinho: o fim do segmento encosta no início do próximo
         self.seg = {}
         for k, lst in por_chave.items():
             eixo = sorted([s for s in lst if s["tipo"] == "B"], key=lambda s: s["ki"])
             for i, s in enumerate(eixo):
                 a, b = s["g"].coords[0], s["g"].coords[-1]
+                if s["ini"] is not None:  # ponto inicial do trecho na base (DER-PR): o início do km fica nele
+                    if math.dist(b, s["ini"]) < math.dist(a, s["ini"]):
+                        s["g"] = LineString(list(s["g"].coords)[::-1])
+                    continue
                 viz = eixo[i + 1]["g"] if i + 1 < len(eixo) else (eixo[i - 1]["g"] if i > 0 else None)
                 if viz is not None:
                     pv = [viz.coords[0], viz.coords[-1]]
@@ -124,6 +141,69 @@ class SNV:
                 if p.geom_type == "LineString" and not p.is_empty:
                     out.append(p)
         return out
+
+
+def gms(txt) -> float | None:
+    """'-24°33′26,26″' -> graus decimais (latitude/longitude do início do trecho no SRE do DER-PR)."""
+    m = re.match(r"\s*(-?)\s*(\d+)\s*°\s*(\d+)\s*[′']\s*([\d.,]+)", str(txt or ""))
+    if not m:
+        return None
+    v = int(m.group(2)) + int(m.group(3)) / 60 + float(m.group(4).replace(",", ".")) / 3600
+    return -v if m.group(1) else v
+
+
+def pista_esquerda(trecho: str) -> bool:
+    """Trechos duplicados vêm em duas pistas (D/E): desenha só uma (a direita), como no SNV."""
+    return trecho[3:4] == "E" or bool(re.match(r"^\d{3}[A-Z]PR\d+E", trecho))
+
+
+def der_pr(rods: set[str], log: list) -> SNV | None:
+    """SRE do DER-PR como base no mesmo esquema do SNV: chave (rodovia, 'PR'), km inicial/final por trecho. Fica só o
+    eixo das rodovias estaduais (inclui trechos coincidentes com BR, municipais e não pavimentados no meio do eixo);
+    saem a pista esquerda dos duplicados e os acessos/contornos/travessias/variantes das BRs (códigos ###[ACUV]PR)."""
+    gd = None
+    try:
+        bruto = json.loads(baixar(URL_DER_PR, timeout=300))
+        feats = []
+        for f in bruto["features"]:
+            p, g = f["properties"], f.get("geometry")
+            t = str(p.get("trecho") or "")
+            if not g or not t or str(p.get("rod_num", "")).zfill(3) not in rods:
+                continue
+            geo = shape(g).simplify(0.0001)
+            if geo.is_empty:
+                continue
+            feats.append({"type": "Feature", "properties": {
+                "trecho": t, "rod_num": int(p["rod_num"]), "km_inicial": p["km_inicial"], "km_final": p["km_final"],
+                "tipojuris": p.get("tipojuris"), "concessao": p.get("concessao"),
+                "xi": gms(p.get("longitudei")), "yi": gms(p.get("latitudei"))},
+                "geometry": json.loads(json.dumps(geo.__geo_interface__))})
+        if not feats:
+            raise ValueError("WFS sem trechos das rodovias pedidas")
+        for f in feats:
+            gm = f["geometry"]
+            linhas = gm["coordinates"] if gm["type"] == "MultiLineString" else [gm["coordinates"]]
+            gm.update(type="MultiLineString", coordinates=[[[round(x, CASAS), round(y, CASAS)] for x, y in ln]
+                                                           for ln in linhas])
+        feats.sort(key=lambda f: (f["properties"]["rod_num"], f["properties"]["km_inicial"], f["properties"]["trecho"]))
+        gd = {"type": "FeatureCollection", "fonte": "DER-PR, GeoServer do Paraná (der:sistema_rodoviario_lin_p31982)",
+              "features": feats}
+        DER_PR.write_text(json.dumps(gd, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        log.append(f"DER-PR: {len(feats)} trechos do SRE (WFS) para {len(rods)} rodovias; cópia em {DER_PR.name}")
+    except Exception as e:  # noqa: BLE001
+        if DER_PR.exists():
+            gd = json.loads(DER_PR.read_text(encoding="utf-8"))
+            log.append(f"DER-PR: WFS indisponível ({e}); usando a cópia {DER_PR.name}")
+        else:
+            log.append(f"DER-PR: WFS indisponível ({e}) e sem cópia; estaduais do PR sem traçado")
+            return None
+    sel = [f for f in gd["features"] if not pista_esquerda(f["properties"]["trecho"])
+           and not re.match(r"^\d{3}[ACUV]PR", f["properties"]["trecho"])]
+    return SNV({"features": [{"geometry": f["geometry"], "properties": {
+        "vl_br": str(f["properties"]["rod_num"]).zfill(3), "sg_uf": "PR", "vl_km_inic": f["properties"]["km_inicial"],
+        "vl_km_fina": f["properties"]["km_final"], "sg_tipo_tr": "B", "ds_tipo_ad": f["properties"].get("tipojuris", ""),
+        "vl_codigo": f["properties"]["trecho"], "versao_snv": "", "xi": f["properties"].get("xi"),
+        "yi": f["properties"].get("yi")}} for f in sel]})
 
 
 def br_num(rod: str) -> str | None:
@@ -253,21 +333,35 @@ def main() -> None:
     args = ap.parse_args()
     log: list[str] = []
 
-    snv = SNV(json.loads(baixar(args.snv, timeout=600)))
+    snv_json = json.loads(baixar(args.snv, timeout=600))
+    snv = SNV(snv_json)
+    # segmentos auxiliares do SNV (contornos, acessos, travessias, variantes) por prefixo do código (ex. 376CPR1)
+    aux = [f for f in snv_json["features"] if f.get("geometry") and f["properties"].get("sg_tipo_tr", "B") != "B"]
+    snv_aux = SNV({"features": [{"geometry": f["geometry"], "properties": {
+        **f["properties"], "vl_br": str(f["properties"].get("vl_codigo", ""))[:7], "sg_tipo_tr": "B"}} for f in aux]})
+    snv_aux.versao = snv.versao
     cad = pd.read_csv(io.BytesIO(baixar(URL_CADASTRO)), sep=";", dtype=str, keep_default_na=False)
     tr = pd.read_parquet(io.BytesIO(baixar(URL_TRECHOS)))
     fonte_snv = f"SNV {snv.versao} (DNIT)"
 
+    comp = pd.read_csv(COMPLEMENTOS, sep=";", dtype={"km_ini": float, "km_fim": float}, keep_default_na=False)
+    ignorar = {(r.id_concessao, br_num(r.rodovia), r.uf, round(r.km_ini, 1), round(r.km_fim, 1))
+               for r in comp.itertuples() if r.base == "ignorar"}
+
     feats = []
-    # 1) federais ANTT: só pista principal das BRs (acessos/alças ficam de fora; rodovias PR-xxx não estão no SNV)
-    tr = tr[tr.tipo_de_rodovia.eq("Federal")].copy()
     tr["uf_sigla"] = tr.uf.astype(str).map(UF_ANTT).fillna(tr.uf.astype(str))
     tr["a"] = tr[["km_m_inicial", "km_m_final"]].min(axis=1)
     tr["b"] = tr[["km_m_inicial", "km_m_final"]].max(axis=1)
-    tr = tr.drop_duplicates(["id_concessao", "rodovia", "uf_sigla", "a", "b"])
+    tr = tr.drop_duplicates(["id_concessao", "tipo_de_rodovia", "rodovia", "uf_sigla", "a", "b"])
+    est = tr[tr.tipo_de_rodovia.eq("Estadual") & tr.uf_sigla.eq("PR")].copy()
+    # 1) federais ANTT: só pista principal das BRs (acessos/contornos dos lotes do PR entram pelos complementos)
+    tr = tr[tr.tipo_de_rodovia.eq("Federal")].copy()
     for r in tr.itertuples():
         br = br_num(r.rodovia)
         if not br:
+            continue
+        if (r.id_concessao, br, r.uf_sigla, round(r.a, 1), round(r.b, 1)) in ignorar:
+            log.append(f"ignorado (complementos): {r.id_concessao} BR-{br}/{r.uf_sigla} km {r.a}-{r.b}")
             continue
         linhas = [ln.simplify(TOL) for ln in snv.trecho(br, r.uf_sigla, r.a, r.b)]
         if not linhas:
@@ -275,7 +369,22 @@ def main() -> None:
             continue
         feats.append(feature(r.id_concessao, f"BR-{br}", r.uf_sigla, r.a, r.b, linhas,
                              f"ANTT trechos concedidos (km) × {fonte_snv}"))
-    # 2) complementos documentados (contratos encerrados, BRs delegadas, lotes estaduais de MG)
+    # 1b) estaduais dos lotes do PR (PR-xxx delegadas à União): km da ANTT sobre o SRE do DER-PR
+    est["rod3"] = est.rodovia.map(lambda v: (re.search(r"(\d{1,3})\s*$", str(v)) or [None, ""])[1].zfill(3))
+    rods_pr = set(est.rod3) | {re.search(r"(\d{1,3})\s*$", r.rodovia).group(1).zfill(3)
+                               for r in comp.itertuples() if r.base == "derpr"}
+    der_p = der_pr(rods_pr, log) if rods_pr else None
+    fonte_derpr = "DER-PR (SRE, GeoServer do Paraná/GeoDER)"
+    for r in est.itertuples():
+        if der_p is None:
+            break
+        linhas = [ln.simplify(TOL) for ln in der_p.trecho(r.rod3, "PR", r.a, r.b)]
+        if not linhas:
+            log.append(f"sem geometria DER-PR: {r.id_concessao} PR-{r.rod3} km {r.a}-{r.b}")
+            continue
+        feats.append(feature(r.id_concessao, f"PR-{r.rod3}", "PR", r.a, r.b, linhas,
+                             f"ANTT trechos concedidos (km, rodovia estadual delegada) × {fonte_derpr}"))
+    # 2) complementos documentados (contratos encerrados, BRs delegadas, lotes estaduais de MG, acessos do PR)
     der = None
     if DER_MG.exists():
         gd = json.loads(DER_MG.read_text(encoding="utf-8"))
@@ -283,10 +392,18 @@ def main() -> None:
             "vl_br": f["properties"]["codigo_snv"][:4], "sg_uf": "MG", "vl_km_inic": f["properties"]["km_inicial"],
             "vl_km_fina": f["properties"]["km_final"], "sg_tipo_tr": "B", "ds_tipo_ad": f["properties"]["jurisdicao"],
             "vl_codigo": f["properties"]["codigo_snv"], "versao_snv": ""}} for f in gd["features"]]})
-    comp = pd.read_csv(COMPLEMENTOS, sep=";", dtype={"km_ini": float, "km_fim": float}, keep_default_na=False)
     for r in comp.itertuples():
         excl = r.excluir_adm or None
-        if r.base == "dermg":
+        if r.base == "ignorar":
+            continue
+        if r.base == "derpr":
+            chave = re.search(r"(\d{1,3})\s*$", r.rodovia).group(1).zfill(3)
+            base, rot, fonte = der_p, f"PR-{chave}", fonte_derpr
+        elif r.base == "snvaux":
+            chave = r.rodovia.strip().upper()
+            base, fonte = snv_aux, f"{fonte_snv}, segmentos {chave}*"
+            rot = f"BR-{chave[:3]} ({AUX_TIPO.get(chave[3:4], 'acesso')})"
+        elif r.base == "dermg":
             num = re.search(r"(\d{1,3})\s*$", r.rodovia).group(1).zfill(3)
             chave, base, rot = num + "E", der, r.rodovia
             fonte = "DER-MG (IDE-Sisema, malha rodoviária estadual)"
