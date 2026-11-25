@@ -14,7 +14,9 @@ Dados: coletor público `pricediscoveryblog-ops/coletor-concessoes` (branches `d
 Mapa (traçado das rodovias): `geo/tracados.geojson`, gerado por `scripts/gerar_tracados.py` e atualizado pelo workflow
 `.github/workflows/tracados.yml` (semanal, manual ou ao mudar o script). Federais: km inicial/final dos trechos concedidos
 da ANTT (dataset `trecho-concedido`, via coletor) cortados sobre a geometria do SNV do DNIT (padrão: SNV 202604A,
-espelho público `lucaasmeiraf/snv-geojson`; `SNV_URL` troca a fonte). SP: KMZ por lote do dataset `malha-rodoviaria` da
+espelho público `lucaasmeiraf/snv-geojson`; `SNV_URL` troca a fonte). Lotes do PR: rodovias estaduais delegadas (PR-xxx)
+pelos km da ANTT sobre o SRE do DER-PR (WFS `der:sistema_rodoviario_lin_p31982` do GeoServer do Paraná, cópia de reserva
+em `geo/der_pr_trechos.geojson`); contornos/acessos/travessias pelos segmentos auxiliares do SNV. SP: KMZ por lote do dataset `malha-rodoviaria` da
 ARTESP. Contratos federais encerrados e BRs delegadas a MG: critérios em `geo/complementos_tracados.csv` (cálculo próprio).
-Ainda sem traçado: rodovias estaduais dos lotes do PR (PR-xxx) e lotes estaduais de MG (MG-050, Sul de Minas, Vias do
+Ainda sem traçado: lotes estaduais de MG (MG-050, Sul de Minas, Vias do
 Café, Via Liberdade, Via Nascentes) e lotes antigos da ARTESP sem KMZ (TEBE, Triângulo do Sol, ViaOeste).
